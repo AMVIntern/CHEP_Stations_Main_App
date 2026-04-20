@@ -1,0 +1,181 @@
+﻿<UserControl x:Class="VisionApp.Wpf.Views.FrameTileView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:halcon="http://schemas.mvtec.com/halcondotnet"
+             mc:Ignorable="d"
+             d:DesignHeight="150" d:DesignWidth="150">
+
+    <Border Style="{StaticResource HeaderPanelBorderStyle}"
+        Margin="6"
+        Padding="6"
+        >
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Header -->
+            <Grid Grid.Row="0"
+      Margin="2,0,2,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- LEFT: LED + Title -->
+                <StackPanel Grid.Column="0"
+                Orientation="Horizontal"
+                VerticalAlignment="Center">
+
+                    <!-- Connection LED -->
+                    <Border Width="10"
+                Height="10"
+                Margin="0,0,6,0"
+                CornerRadius="1"
+                BorderThickness="1"
+                BorderBrush="#111">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <!-- default (disconnected/unknown) -->
+                                <Setter Property="Background" Value="#E7040F"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Connection.IsConnected}" Value="True">
+                                        <Setter Property="Background" Value="#00E676"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                    </Border>
+
+                    <TextBlock Text="{Binding Title}"
+                   FontWeight="Normal" Foreground="White" />
+                </StackPanel>
+
+                <!-- RIGHT: Status text -->
+                <TextBlock Grid.Column="1"
+               Text="{Binding StatusText}"
+               FontWeight="SemiBold"
+               Margin="8,0,0,0">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#999" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Pass}" Value="True">
+                                    <Setter Property="Foreground" Value="#19A974" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding Pass}" Value="False">
+                                    <Setter Property="Foreground" Value="#E7040F" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+
+
+            <!-- Image area -->
+            <Grid Grid.Row="1"
+      Background="{DynamicResource PanelBackgroundBrush}"
+      ClipToBounds="True">
+
+                <!-- Square viewport that scales uniformly to fit -->
+                <Viewbox Stretch="Uniform"
+             HorizontalAlignment="Center"
+             VerticalAlignment="Center">
+
+                    <!-- Base square size (Viewbox scales this uniformly) -->
+                    <!-- PASS/FAIL border that hugs the 260x260 image square -->
+                    <!-- PASS/FAIL border only for the image -->
+                    <Grid HorizontalAlignment="Center"
+      VerticalAlignment="Center">
+
+                        <!-- Solid border (Neutral / PASS) -->
+                        <Border CornerRadius="4"
+            BorderThickness="6"
+            Padding="4">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Setter Property="BorderBrush" Value="#444"/>
+                                    <Style.Triggers>
+                                        <!-- PASS = solid dark neon green -->
+                                        <DataTrigger Binding="{Binding Pass}" Value="True">
+                                            <Setter Property="BorderBrush" Value="#00E676"/>
+                                        </DataTrigger>
+
+                                        <!-- FAIL = hide this solid border (we'll show dotted rectangle instead) -->
+                                        <DataTrigger Binding="{Binding Pass}" Value="False">
+                                            <Setter Property="BorderThickness" Value="0"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+
+                            <!-- Your existing content stays EXACTLY the same -->
+                            <Viewbox Stretch="Uniform"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center">
+                                <Border Width="260"
+                    Height="260"
+                    CornerRadius="4"
+                    ClipToBounds="True"
+                    Background="{DynamicResource PanelBackgroundBrush}">
+                                    <halcon:HSmartWindowControlWPF x:Name="SmartWin"
+                                              HorizontalAlignment="Stretch"
+                                              VerticalAlignment="Stretch"/>
+                                </Border>
+                            </Viewbox>
+                        </Border>
+
+                        <!-- FAIL = dotted red border overlay -->
+                        <Rectangle RadiusX="4"
+               RadiusY="4"
+               StrokeThickness="6"
+               Stroke="#FF1744"
+               StrokeDashArray="4 3"
+               StrokeDashCap="Round"
+               Fill="Transparent"
+               IsHitTestVisible="False">
+                            <Rectangle.Style>
+                                <Style TargetType="Rectangle">
+                                    <Setter Property="UIElement.Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Pass}" Value="False">
+                                            <Setter Property="UIElement.Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Rectangle.Style>
+                        </Rectangle>
+
+                    </Grid>
+                </Viewbox>
+
+                <!-- Click overlay (kept on top) -->
+                <Button Background="Transparent"
+            BorderThickness="0"
+            Focusable="False"
+            Command="{Binding OpenSnapshotCommand}"
+            Cursor="Hand"
+            ToolTip="Open image">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Opacity" Value="0.0" />
+                            <Style.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Opacity" Value="0.08" />
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter Property="Opacity" Value="0.16" />
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </Grid>
+        </Grid>
+    </Border>
+</UserControl>

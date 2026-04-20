@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="libplctag" Version="1.5.2" />
+    <PackageReference Include="MVTec.HalconDotNet" Version="25050.0.0" />
+    <PackageReference Include="MVTec.HalconDotNet-Windows" Version="25050.0.0" />
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260330" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VisionApp.Core\VisionApp.Core.csproj" />
+    <ProjectReference Include="..\VisionApp.Inference.YoloX\VisionApp.Inference.YoloX.csproj" />
+  </ItemGroup>
+
+</Project>

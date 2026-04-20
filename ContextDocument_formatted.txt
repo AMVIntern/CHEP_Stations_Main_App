@@ -1,0 +1,2936 @@
+# VisionApp Refactor Handoff (WPF + Generic Host + PLC + HALCON + Image Logging)
+Date: 2026-01-21
+Author: Harsha
+Goal: Modular, production-grade WPF vision station app with:
+- PLC trigger source (libplctag)
+- HALCON camera capture (HDev procedures)
+- Cycle engine orchestration (triggers -> capture -> inspect -> results -> cycle complete)
+- UI thumbnail tiles per camera + per trigger for each cycle
+- Disk image logging with grouping + month/day folder structure
+
+---
+
+## 1) Core Architecture Overview
+
+### Core project (VisionApp.Core)
+Contains NO HALCON/PLC/UI logic.
+
+Key domain types:
+- TriggerKey(cameraId, index)
+- TriggerEvent(key, timestamp)
+- CaptureRequest(cycleId, triggerKey)
+- FrameArrived(cycleId, triggerKey, HImage image, capturedAt) : IDisposable
+- InspectionResult(cycleId, triggerKey, pass, message)
+- CycleCompleted(cycleId, overallPass, results[], completedAt)
+
+Key services/interfaces:
+- ITriggerSource -> IAsyncEnumerable<TriggerEvent> ReadAllAsync(CancellationToken)
+- ICamera -> Task<FrameArrived> CaptureAsync(CaptureRequest, CancellationToken)
+- IInspectionRunner -> runs inspection per frame (dummy for now)
+- IImageLogger -> LogFrameAsync(FrameArrived, ct)
+- IResultSink -> write final results somewhere (null for now)
+- IFrameObserver -> UI observer for frames arriving
+
+Engine:
+- CapturePlan:
+  - OrderedTriggers: list of TriggerKey (for validation/expected count)
+  - StartTriggers: HashSet<TriggerKey>
+  - EndTriggers: HashSet<TriggerKey> (multi-end supported)
+  - ExpectedCount = OrderedTriggers.Count
+- CycleEngine:
+  - Deterministic state machine:
+    - Idle -> Running -> Completing
+  - On TriggerEvent:
+    - if Idle and trigger in StartTriggers => StartNewCycle
+    - ignores unknown/unplanned triggers
+    - prevents duplicates per cycle using _seenTriggers
+    - marks completion-ready only when ALL EndTriggers have been seen (multi-camera end)
+  - On InspectionResult:
+    - cycle completes when:
+      - end condition satisfied (end triggers seen)
+      - AND result count == ExpectedCount
+  - Important fix implemented:
+    - if start trigger is also end (single trigger cycle) => immediately move to Completing
+
+Hosted pipeline services:
+- TriggerDispatchService: reads triggers and writes to channels
+- CameraDispatcherService: receives CaptureRequest, calls ICamera, produces FrameArrived
+- InspectionService: receives FrameArrived, calls IInspectionRunner, produces InspectionResult
+- CycleOrchestrationService: applies CycleEngine logic and emits CaptureRequests + CycleCompleted
+- FrameObserver wiring sends frames to CycleFramesStore (UI + tiles)
+
+---
+
+## 2) WPF Host Setup
+
+WPF uses Generic Host (Microsoft.Extensions.Hosting + DI).
+App.xaml StartupUri is commented out; MainWindow created via host to ensure DI works.
+Some minimal UI-only code-behind is allowed (e.g., HSmartWindowControl handle binding).
+
+---
+
+## 3) UI: Cycle Frames Tiles (HSmartWindowControlWPF)
+
+Decision:
+- Use HalconDotNet HSmartWindowControlWPF (preferred) instead of converting to BitmapSource.
+- UI shows a “birds-eye view” tiled layout of frames per cycle across cameras/triggers.
+- Configurable layout idea: row-per-camera vs column-per-camera (future config).
+
+Implemented:
+- CycleFramesStore: holds latest/current cycle frames in memory for UI binding.
+- SmartWindowFrameObserver: observes frames and updates store.
+- FrameTileView: per-frame UI tile rendering using HSmartWindowControlWPF.
+- MainWindow.xaml layout supports a tile grid to show all frames for a cycle.
+
+---
+
+## 4) Folder Replay Cameras (for simulation)
+
+Earlier step:
+- FolderReplayCamera reads images from folders Cam1 and Cam2 for triggers.
+- Used for sanity checks before PLC+HALCON.
+
+---
+
+## 5) HALCON Integration (Live cameras)
+
+### Key learning:
+User got System.ExecutionEngineException due to HALCON NuGet version mismatch across projects.
+Fixed by aligning HALCON package versions.
+
+### FrameArrived disposal safety:
+HALCON iconic object dispose can crash process if uninitialized.
+FrameArrived.Dispose():
+- if Image == null OR not initialized => skip dispose
+- else dispose
+
+### HALCON procedure approach:
+Do NOT set extra params in C#.
+All camera params are inside HALCON HDev procedure:
+
+StartCameraFrameGrabber procedure contains:
+- open_framegrabber(...)
+- set_framegrabber_param TriggerMode=On
+- StreamBufferHandlingMode=NewestOnly
+- grab_timeout=1000
+- lineDebouncingPeriod=1
+- AcquisitionMode=Continuous
+- grab_image_start(...)
+
+### HALCON engine / procedures folder:
+Old app used ImageAcquisitionViewModel to set Engine.SetProcedurePath(path).
+New design:
+- HalconProcedureOptions: procedure folder path + start/close proc names
+- HalconEngineProvider: singleton HDevEngine sets procedure path once
+- HDevProcedureFramegrabberFactory: uses engine + procedure names to open/close
+
+---
+
+## 6) HALCON camera class: HalconGigECamera
+
+HalconGigECamera implements ICamera.
+Responsibilities:
+- EnsureConnectedAsync() with reconnect/backoff
+- DrainQueue(handle) to drop stale buffered images
+- TryGrabAsync(handle) using GrabImageAsync (single retry on HALCON 5322)
+- CaptureAsync(request) returns FrameArrived with HImage
+
+Important: Simplified HalconGigECamera.cs to remove:
+- ExposureTime, ExtraParams
+- GrabTimeoutMs / RetryOn5322 options
+- ReconnectBackoff options
+Instead uses internal constants:
+- GrabMaxDelayMs = 0
+- RetryDelayMs = 5
+- backoff start 250ms, max 2000ms
+
+Health:
+- HalconCameraHealthService (BackgroundService) checks cameras periodically and calls EnsureConnectedAsync.
+
+---
+
+## 7) Image Logging System
+
+Goal:
+- Group images by camera group folder (e.g., Cam1Folder, Cam2Folder)
+- Inside group folder:
+  - Month folder (MM)
+    - Day folder (YYYY-MM-DD)
+      - Cycle folder named:
+        YYYYMMDD_HHMMSS_mmm__{cycleIdShort}
+          - images for whole cycle saved per trigger
+
+Implementation:
+- ImageLoggingOptions (enabled, root path, groups mapping, DropWhenBusy, etc.)
+- ImageLogQueue (channel-based)
+- ImageLogWriterService (BackgroundService) writes images to disk
+- HalconDiskImageLogger clones images then enqueues item (logger owns clone)
+- Important bug fix: must handle uninitialized images and avoid leaking clones when queue drops items
+
+LogFrameAsync must do:
+- if !Enabled => return
+- if frame.Image is null or !IsInitialized => return
+- clone = frame.Image.CopyImage()
+- if DropWhenBusy:
+  - if TryEnqueue fails => dispose clone (avoid memory leak)
+- else EnqueueAsync
+
+---
+
+## 8) PLC Triggers (libplctag) - Refactor
+
+Old app had hardcoded:
+- PlcIp, CipPath, BaseTag for each camera group
+- fixed tag count arrays size=5
+- sync gating: ignore triggers 2..N until trigger1 seen
+- re-arm requires low sustained MinLowMs
+- poll timer PeriodicTimer every ReadDelayMs (e.g., 5ms)
+- per-tag reads done individually
+
+New app uses config-based groups:
+
+PlcTriggerOptions:
+- Gateway, Path, ReadDelayMs, MinLowMs
+- Groups: list of PlcTriggerGroup
+PlcTriggerGroup:
+- CameraId (or CameraIds in newer version)
+- BaseTag (e.g., CameraStation4_1_Control.AppTriggerIndex)
+- TriggerCount (e.g., 4)
+- RequireSyncOnTrigger1 (true)
+
+Design:
+- PlcTriggerSource.ReadAllAsync yields TriggerEvent stream
+- GroupMonitor per group monitors BaseTag.1..BaseTag.N
+  - Tag[] _tags
+  - int[] _prev
+  - bool[] _armed
+  - long[] _lastLowTicks
+  - bool _synced
+
+Issue fixed:
+- CS1626 yield return in try/catch: solution is move try/catch inside loops, not around the yield.
+
+Config examples:
+Single camera per group:
+"Groups": [
+  { "CameraIds": ["Cam1"], "BaseTag": "..._1_...AppTriggerIndex", "TriggerCount": 4, "RequireSyncOnTrigger1": true },
+  { "CameraIds": ["Cam2"], "BaseTag": "..._2_...AppTriggerIndex", "TriggerCount": 4, "RequireSyncOnTrigger1": true }
+]
+
+If one BaseTag drives multiple cameras (fan-out), use:
+{ "CameraIds": ["Cam2","Cam3"], "BaseTag": "CameraStation4_2_Control.AppTriggerIndex", ... }
+
+NOTE: must use CameraIds (plural), not CameraId, if group supports many cameras.
+
+---
+
+## 9) Current DI Wiring Status (Infrastructure)
+
+VisionInfrastructureServiceCollectionExtensions.AddVisionInfrastructure registers:
+- FolderReplayOptions (still present but replay cameras commented out)
+- ImageLoggingOptions
+- ImageLogQueue + ImageLogWriterService
+- PlcTriggerOptions
+- HalconProcedureOptions + HalconEngineProvider (required for HDev procedures)
+- HalconCameraOptions
+- HalconOpenCloseGate
+- IFramegrabberFactory -> HDevProcedureFramegrabberFactory
+- IEnumerable<ICamera> -> HalconGigECamera instances from config (only if HalconCameras.Enabled)
+- HalconCameraHealthService hosted service
+- ITriggerSource -> PlcTriggerSource
+- IInspectionRunner -> DummyInspectionRunner
+- IImageLogger -> HalconDiskImageLogger
+- IResultSink -> NullResultSink
+
+---
+
+## 10) Known Runtime Issue: Missing First Trigger / Wrong First Image
+
+Symptom:
+- Always missing first trigger image.
+- First displayed image corresponds to real “second image”.
+- Sometimes PLC feels slow / misses edges.
+
+Hypotheses:
+A) PLC Trigger1 edge missed due to polling too slow or pulse too short
+B) Trigger1 detected but ignored due to sync/armed gating (RequireSyncOnTrigger1 + MinLowMs)
+C) Trigger1 detected, but camera returns buffered next frame because DrainQueue discards the correct first frame
+
+Important reasoning:
+- PLC poll target = ReadDelayMs (e.g., 5ms), but REAL tick can be slower due to multiple tag.Read() calls
+- If PLC pulse high time < poll tick time, rising edge may be missed
+- DrainQueue before GrabImageAsync might discard Trigger1 frame if it was already buffered
+
+Planned solution step:
+Add PLC trigger logging diagnostics first before changing logic.
+
+---
+
+## 11) Added / Planned PLC Logging
+
+Goal:
+- Determine whether trigger1 edge is missing, ignored, or delayed.
+- Measure actual poll tick duration vs target ReadDelayMs.
+- Log when edges are ignored due to sync gating.
+- Optional: log every tag read (noisy).
+
+Proposed PlcTriggerOptions diagnostics:
+- TraceEnabled
+- TraceEveryNPolls
+- TraceEveryTagRead
+- TraceIgnoredEdges
+
+Add logs inside:
+- GroupMonitor.InitializeTags() => initial state
+- GroupMonitor.PollOnce():
+  - st!=0 warnings
+  - re-arm transitions
+  - rising edges detected
+  - edges ignored due to !_synced
+- PlcTriggerSource main poll loop:
+  - tick duration measurement
+  - overrun warnings
+
+---
+
+## 12) Handling HALCON Grab Failure (Don’t break cycle)
+
+Problem:
+HalconGigECamera.CaptureAsync throws InvalidOperationException if grab fails.
+Effect:
+- No FrameArrived => no InspectionResult => cycle can stall forever waiting for ExpectedCount results.
+
+Temporary handling:
+- Option: Return FrameArrived with uninitialized new HImage() instead of throwing
+- InspectionService should detect uninitialized image and emit fail InspectionResult
+- UI observer + image logger must skip uninitialized images
+
+Image logger fix already applied:
+- skip if frame.Image is null or !IsInitialized
+- dispose clone if queue drops item
+
+---
+
+## 13) Next Steps
+
+1) Add PLC trigger logging (high signal) and capture logs during missed trigger1 case.
+2) Measure actual poll tick durations; confirm edge losses or gating.
+3) If PLC is missing edges:
+   - ask PLC guy to increase pulse width OR
+   - reduce number of tag reads (read DINT/array vs individual tag reads)
+4) If PLC detects trigger1 but image mismatch:
+   - change DrainQueue strategy OR
+   - log image_available count pre/post drain
+   - consider grabbing first buffered frame instead of draining, depending on trigger timing.
+5) After stable capture:
+   - replace DummyInspectionRunner with real ONNX/HALCON inspections
+   - add real IResultSink (PLC writeback / database / CSV)
+   - finalize UI layout config (row/column ordering per camera)
+
+---
+
+## 14) Key Code Safety Notes
+
+- HALCON iconic objects: do not dispose uninitialized HImage.
+- LogFrameAsync must not call CopyImage on uninitialized image.
+- DropWhenBusy queue: if TryEnqueue fails, dispose cloned HImage to avoid memory leak.
+- Avoid yield return inside try/catch with catch (C# async iterator limitation).
+- Keep open/close serialized across HALCON cameras using HalconOpenCloseGate semaphore to avoid driver weirdness.
+
+---
+
+## 15) Appsettings Required Sections
+
+PlcTrigger:
+- Gateway
+- Path
+- ReadDelayMs
+- MinLowMs
+- Groups [ { CameraIds, BaseTag, TriggerCount, RequireSyncOnTrigger1 } ]
+
+HalconProcedures:
+- ProcedurePath
+- StartProcName
+- CloseProcName
+
+HalconCameras:
+- Enabled
+- HealthIntervalMs
+- SerializeOpenClose
+- Cameras [ { CameraId, CameraName } ]
+
+ImageLogging:
+- Enabled
+- RootPath
+- Groups mapping
+- DropWhenBusy, etc.
+
+---
+
+Here’s a detailed handoff summary you can paste into a new chat. I’ve written it like an “engineering context + current state + decisions + known gotchas” doc.
+
+---
+
+# VisionApp WPF Refactor – Full Context Handoff (Jan 2026)
+
+## Goal
+
+Build a professional, modular, production-grade **WPF vision station app** using **.NET Generic Host + DI + Channels** with:
+
+* **PLC trigger source** (libplctag, ControlLogix)
+* **HALCON camera capture** via HDev procedures (GigE cameras)
+* **Deterministic cycle engine** (Trigger → Capture → Preprocess → Inspect → Results → Cycle Complete)
+* **Bird’s-eye UI** with tiles per camera + trigger index
+* **Disk image logging** with camera grouping + day/month folders
+* Ability to run in **Offline mode** (folder replay + dummy triggers) or **Online mode** (PLC + HALCON cameras)
+
+---
+
+## Projects / Layers
+
+### VisionApp.Core
+
+Contains **domain + orchestration + hosting services**. **No HALCON/PLC/UI code**.
+
+Key domain records:
+
+* `TriggerKey(cameraId, index)`
+* `TriggerEvent(key, timestamp)`
+* `CaptureRequest(cycleId, key)`
+* `RawFrameArrived(cycleId, key, HImage image, capturedAt)` (added later)
+* `FrameArrived(cycleId, key, HImage image, capturedAt)` : `IDisposable`
+* `InspectionResult(cycleId, key, pass, score, completedAt)`
+* `CycleCompleted(cycleId, overallPass, results, completedAt)`
+
+Key interfaces:
+
+* `ITriggerSource` → `IAsyncEnumerable<TriggerEvent> ReadAllAsync(ct)`
+* `ICamera` → `Task<FrameArrived> CaptureAsync(CaptureRequest, ct)`
+* `IFrameObserver` (UI observer)
+* `IImageLogger`
+* `IInspectionRunner`
+* `IResultSink`
+
+### VisionApp.Infrastructure
+
+Contains implementations:
+
+* PLC triggers (`PlcTriggerSource`)
+* HALCON cameras (`HalconGigECamera`)
+* Preprocessing (`GammaPreprocessor` via `IFramePreprocessor`)
+* Image logging pipeline (`HalconDiskImageLogger`, queue/writer service)
+* Dummy/Null implementations for offline or minimal use
+
+### VisionApp.Wpf
+
+Contains WPF UI:
+
+* Stores (`CycleFramesStore`)
+* Observer (`SmartWindowFrameObserver`)
+* ViewModels (`MainViewModel`, `CameraGroupViewModel`, `FrameTileViewModel`)
+* Views (`FrameTileView.xaml`, MainWindow)
+
+---
+
+## Core Pipeline Architecture (Hosted Services + Channels)
+
+### Channels used
+
+Originally:
+
+* `Channel<TriggerEvent>`
+* `Channel<CaptureRequest>`
+* `Channel<FrameArrived>`
+* `Channel<InspectionResult>`
+
+Later changed to support preprocessing:
+
+* `Channel<RawFrameArrived>` (raw from camera)
+* `Channel<FrameArrived>` (processed frame used by UI/logging/inspection)
+
+Also changed from **Unbounded** to **Bounded** for raw + processed frames to control memory:
+
+* `RawFrameArrived` bounded capacity ~30 (DropOldest)
+* `FrameArrived` bounded capacity ~30 (DropOldest)
+
+### Hosted services (Core.Hosting.Services)
+
+1. **TriggerPumpService**
+
+* `await foreach (var t in triggerSource.ReadAllAsync(ct))`
+* writes to trigger channel
+* This behaves like “infinite stream” until cancellation — it awaits triggers.
+
+2. **CycleEngineService**
+
+* reads triggers channel + inspection results channel
+* single deterministic state machine `CycleEngine`
+* uses a `SemaphoreSlim gate` to serialize access to CycleEngine (since two read loops)
+* emits `CaptureRequest` into capture channel
+
+3. **CameraDispatcherService**
+
+* reads `CaptureRequest`
+* calls `ICamera.CaptureAsync`
+* writes **RawFrameArrived** into raw frame channel (after refactor)
+* Previously it also notified UI + logging directly, but after preprocessing split those moved to preprocess service.
+
+4. **FramePreprocessService** (added)
+
+* reads `RawFrameArrived`
+* runs `IFramePreprocessor` (Gamma preprocessor)
+* **disposes raw image if a new processed frame was created**
+* notifies UI observers with processed frame
+* logs processed frame (what you inspected)
+* writes processed `FrameArrived` into processed frame channel
+
+5. **InspectionService**
+
+* reads processed `FrameArrived`
+* runs `IInspectionRunner`
+* writes `InspectionResult`
+* always `frame.Dispose()` in finally to free HALCON resources
+
+---
+
+## Cycle Engine Logic
+
+### CapturePlan
+
+* `OrderedTriggers` list (expected count + readability)
+* `StartTriggers` set
+* `EndTriggers` set (multi-end supported)
+* `ExpectedCount = OrderedTriggers.Count`
+
+Example plan:
+
+* Cam1 triggers 1..4
+* Cam2 triggers 1..4
+* Start: Cam1[1], Cam2[1]
+* End: Cam1[4], Cam2[4]
+
+### CycleEngine states
+
+* `Idle`
+* `Running`
+* `Completing`
+
+Key behaviors:
+
+* In `Idle`, only starts new cycle if trigger is in StartTriggers and is contained in plan.
+* In Running/Completing:
+
+  * ignores triggers not in plan
+  * dedupes using `_seenTriggers`
+  * tracks end triggers seen with `_endSeen`
+  * moves to Completing only when **all end triggers** seen
+* Completes only when:
+
+  * all end triggers seen
+  * AND results count equals ExpectedCount
+* Special fix: if start trigger is also end trigger (single trigger cycle), immediately Completing.
+
+---
+
+## PLC Trigger System (libplctag)
+
+### PlcTriggerSource
+
+* Builds multiple `GroupMonitor` from config
+* Uses PeriodicTimer at `ReadDelayMs` (e.g. 5ms)
+* Polls tags per group per tick
+* `GroupMonitor` monitors BaseTag.1..BaseTag.N
+
+### GroupMonitor logic
+
+Per trigger index i:
+
+* Tag reads bit0 (0/1)
+* `_armed[i]` becomes true only after sustained LOW for `MinLowMs`
+* Rising edge detected if `_prev=0`, `value=1`, and `_armed=true`
+* Sync gating: if `RequireSyncOnTrigger1=true`, ignore edges for triggers 2..N until trigger1 is seen once after startup
+* Fan-out support: one PLC tag group can produce trigger events for multiple camera IDs
+
+### Config issues found/fixed
+
+* Needed correct section naming / binding alignment.
+* Logging section initially had mismatch `PlcTriggers` vs `PlcTrigger` in config.
+* Ultimately: created `PlcTriggerOptions` with diagnostics flags.
+
+### Missing-first-trigger investigation
+
+We had a known issue where first image/trigger seemed shifted.
+Possible causes:
+
+* PLC pulse too short relative to actual polling tick time
+* gating logic causing ignoring of trigger1
+* camera buffer returning wrong frames due to DrainQueue behavior
+  Eventually user discovered they had inverted PLC timing tags per camera; after correction it behaved.
+
+---
+
+## HALCON Camera Capture (HalconGigECamera)
+
+* Uses HDev procedures for open/close so all camera param setup lives inside HALCON (TriggerMode, StreamBufferHandlingMode, AcquisitionMode=Continuous, etc.)
+* Connection logic with retry/backoff, with optional global open/close gate to avoid driver weirdness
+* Capture uses:
+
+  * EnsureConnectedAsync
+  * Grab lock to serialize GrabImageAsync
+  * DrainQueue before grabbing to drop stale frames
+  * GrabImageAsync with retry on error 5322
+* If grab fails, returns **uninitialized `new HImage()`** to avoid stalling pipeline (then preprocessing/logging/inspection skip uninitialized images).
+
+**Key decision:** keep DrainQueue because camera stays “armed” and buffers frames; when triggered we want newest frame.
+
+---
+
+## Gamma Preprocess (moved earlier, not an “inspection”)
+
+You wanted UI to display **the same image you process**, and you didn’t want to apply gamma twice.
+
+Decision:
+
+* Treat gamma as a **preprocessing step** before inspection.
+* Add preprocessing stage between camera capture and inspection.
+* If gamma disabled or fails, pass through raw image.
+
+Implementation:
+
+* `RawFrameArrived` (raw) → `GammaPreprocessor` → `FrameArrived` (processed)
+* Skip logic for some cameras supported (hardcoded for now; later recipe/config)
+
+---
+
+## Disposal / Memory Ownership Rules (Very Important)
+
+HALCON images are heavy, must be disposed correctly.
+
+Ownership rules:
+
+* **Pipeline owns** raw/processed frame images until they are handed to UI as a clone.
+* UI must **CopyImage()** and own that copy.
+
+Where to dispose:
+
+* **FramePreprocessService**
+
+  * If preprocessor returns a *new* `FrameArrived`, dispose the raw frame (`raw.Dispose()`).
+  * Do not dispose processed frame here (it continues down pipeline).
+* **InspectionService**
+
+  * Always dispose `FrameArrived` after inspection (in finally).
+* **UI store / tiles**
+
+  * UI observer does `frame.Image.CopyImage()`
+  * Tile VM disposes old image before replacing
+  * Store clears tiles on new cycle and disposes old images
+* **Image logging**
+
+  * Logger clones image and enqueues clone
+  * If queue drops item, must dispose clone immediately
+  * Writer must dispose clone after saving
+
+---
+
+## Image Logging (Root cause of memory growth)
+
+Observation:
+
+* Offline mode stable RAM.
+* Online mode RAM climbed rapidly until ImageLogging disabled.
+* Root cause was: logging pipeline could not keep up → unbounded growth (or clones not disposed on drops).
+
+Fixes:
+
+* Use **bounded channels** for raw/processed frames (capacity 30, DropOldest)
+* Also ensure logging queue is bounded and drop behavior disposes images.
+
+Key learning:
+
+* A channel gets “full” when producer is faster than consumer. If consumer (disk writes) can’t keep up, items pile up.
+* With large objects (HALCON images), unbounded queues == memory explosion.
+
+Settings guidance for ImageLogging (example):
+
+* `QueueCapacity`: start modest (e.g., 100–300); if writing is slower than capture, you MUST drop or block.
+* `DropWhenBusy=true` recommended for live systems so logging never kills app.
+* `Format=png` is heavier; jpg is faster/smaller.
+* Folder structure options OK (month/day/cycle).
+
+---
+
+## DI / Modules / Offline vs Online
+
+You wanted to toggle offline vs online with a simple hardcoded bool.
+
+Solution:
+
+* Create Infrastructure modules:
+
+  * `AddImageLoggingModule`
+  * `AddOfflineIO` (FolderReplayCamera + DummyTriggerSource)
+  * `AddOnlineIO` (PlcTriggerSource + HalconGigECamera + health service)
+  * `AddInspectionModule`
+  * `AddSinksModule`
+* Keep ServiceCollectionExtension clean and compose modules.
+
+---
+
+## UI (Bird’s-eye Tiles)
+
+Current working UI:
+
+* `CycleFramesStore` built from `CapturePlan.OrderedTriggers`
+* `SmartWindowFrameObserver` updates store on UI thread and uses CopyImage so UI owns images.
+* Tile template uses HALCON `HSmartWindowControlWPF`.
+* `FrameTileViewModel` disposes previous image before setting new.
+
+### New requirement (layout grouping + ordering)
+
+Initial UI showed all cameras stacked and each camera had triggers left→right.
+
+You wanted:
+
+* Group cameras into 2 sections:
+
+  1. Station4: **Cam1 | Cam2**
+  2. Station5: **S5Cam1 | S5Cam2 | S5Cam3**
+* Station4 must appear before Station5.
+* In each section, cameras side-by-side (horizontal).
+* Remove the global layout changer dropdown.
+
+Proposed direction:
+
+* Replace `CameraGroups` (flat list) with `Sections`.
+* Each section contains a list of camera groups.
+* Each camera group controls tile orientation (still can be horizontal rows etc.)
+* XAML renders:
+
+  * ItemsControl over Sections (vertical)
+  * Inside each section: ItemsControl over Cameras using WrapPanel/StackPanel horizontal
+  * Each camera renders its tiles (usually horizontal)
+
+---
+
+## Current App Status
+
+* Online pipeline stable.
+* PLC camera tag mix-up caused weird slot shifting but corrected.
+* DrainQueue is kept and preferred.
+* Bounded channels + logging fixes stabilized memory.
+* UI currently works; next step is implementing the **sectioned UI layout** and later building a recipe manager for inspection configuration.
+
+---
+
+## Things Likely To Revisit Later
+
+* Recipe/config system for:
+
+  * Which cameras get gamma preprocess
+  * Which cameras get which inspection pipeline steps
+  * Per-camera tile orientation rules
+  * Capture plan loading (instead of CapturePlanFactory)
+* Real inspections (ONNX/HALCON) replacing dummy runner
+* Result sink writing back to PLC/DB/CSV
+* PLC polling optimization if missing edges occurs (bulk reads, increase pulse width, etc.)
+
+---
+EXTRA Context:
+
+Here’s a detailed “handoff summary” you can paste into a new chat.
+
+---
+
+# VisionApp Refactor – Detailed Handoff Summary (WPF + Generic Host + PLC + HALCON + Channels + UI + Logging)
+
+**Timezone:** Australia/Melbourne
+**Date range:** Jan 2026
+**Goal:** Modular, production-grade WPF vision station app that captures images from multiple cameras on PLC triggers, shows them in a birds-eye UI, and optionally logs images to disk. Built with Generic Host + DI + BackgroundService pipeline. Uses HALCON + libplctag.
+
+---
+
+## 1) Architecture Overview
+
+### Projects
+
+* **VisionApp.Core**
+
+  * Domain models + interfaces + engine state machine (NO HALCON/PLC/UI logic)
+  * Hosted services that orchestrate the pipeline via channels
+* **VisionApp.Infrastructure**
+
+  * PLC trigger implementation (libplctag)
+  * HALCON cameras via HDev procedures
+  * Image logging implementation
+  * Offline replay camera + dummy trigger options
+* **VisionApp.Wpf**
+
+  * UI: tiles + smart window controls + store + observer
+
+### Domain types (Core)
+
+* `TriggerKey(cameraId, index)`
+* `TriggerEvent(key, timestamp)`
+* `CaptureRequest(cycleId, triggerKey)`
+* `RawFrameArrived(cycleId, key, HImage image, capturedAt) : IDisposable` (added later)
+* `FrameArrived(cycleId, key, HImage image, capturedAt) : IDisposable` (processed image)
+* `InspectionResult(cycleId, key, pass, score, completedAt)` (may change later)
+* `CycleCompleted(...)`
+
+### Interfaces
+
+* `ITriggerSource` → `IAsyncEnumerable<TriggerEvent> ReadAllAsync(ct)`
+* `ICamera` → `Task<RawFrameArrived> CaptureAsync(CaptureRequest, ct)` (was FrameArrived earlier)
+* `IFramePreprocessor` → `Task<FrameArrived> PreprocessAsync(RawFrameArrived raw, ct)`
+* `IFrameObserver` → UI observer for `FrameArrived`
+* `IImageLogger` → log `FrameArrived` to disk
+* `IInspectionRunner` → runs inspections (temporarily removed later)
+* `IResultSink` → sink cycle results (null for now)
+
+---
+
+## 2) Pipeline Design (Hosted Services + Channels)
+
+### Channels (Core)
+
+Originally:
+
+* TriggerEvent, CaptureRequest, FrameArrived, InspectionResult
+
+Later updated to support preprocessing and avoid double gamma:
+
+* `Channel<TriggerEvent>`
+* `Channel<CaptureRequest>`
+* `Channel<RawFrameArrived>` (from camera)
+* `Channel<FrameArrived>` (after preprocessing, used by UI + inspection + logging)
+* `Channel<InspectionResult>`
+
+### Hosted Services
+
+* **TriggerPumpService**
+
+  * `await foreach` over `ITriggerSource.ReadAllAsync(ct)`
+  * Writes each trigger into `Channel<TriggerEvent>`
+  * Clarification: it is effectively an “infinite loop” while the trigger source yields indefinitely (until ct cancelled).
+* **CycleEngineService**
+
+  * Single “truth” orchestrator: reads TriggerEvent & InspectionResult from channels
+  * Uses gate lock to serialize access to non-thread-safe engine
+  * On accepted trigger → emits CaptureRequest
+  * On completion → fans out to IResultSink(s)
+* **CameraDispatcherService**
+
+  * Reads CaptureRequest, finds camera by CameraId, captures a **RAW** frame
+  * Writes `RawFrameArrived` to raw channel
+  * (Earlier version notified UI/loggers here, but later moved to preprocess stage so UI sees processed images)
+* **FramePreprocessService**
+
+  * Reads `RawFrameArrived`, runs preprocessor (Gamma)
+  * Notifies UI observers with **processed** frame
+  * Logs processed frame
+  * Writes `FrameArrived` (processed) downstream
+* **InspectionService**
+
+  * Reads processed `FrameArrived`, runs `IInspectionRunner`, emits InspectionResult, disposes frame
+
+---
+
+## 3) Cycle Engine (Core)
+
+### CapturePlan
+
+* OrderedTriggers (validation + expected count)
+* StartTriggers
+* EndTriggers (multi-end supported)
+* `ExpectedCount = OrderedTriggers.Count`
+* Multi-end completion: cycle end condition satisfied when ALL end triggers seen.
+
+### CycleEngine logic
+
+* `TryHandleTrigger`:
+
+  * If Idle and trigger in StartTriggers + in plan → start new cycle, emit CaptureRequest
+  * If Running/Completing: ignore not-in-plan; ignore duplicates (`_seenTriggers`)
+  * Track end triggers: `_endSeen`; transition to Completing only when all end triggers seen
+  * Special fix: if start trigger is also end, immediately satisfy end condition and move to Completing
+* `TryHandleInspectionResult`:
+
+  * Adds result, completes when:
+
+    * all end triggers seen
+    * AND `_results.Count == ExpectedCount`
+  * Emits CycleCompleted then resets
+
+---
+
+## 4) PLC Trigger System (Infrastructure)
+
+### PlcTriggerOptions / PlcTriggerGroup
+
+* Gateway, Path, ReadDelayMs, MinLowMs
+* Groups: each group has:
+
+  * `CameraIds` (fan-out supported)
+  * BaseTag (e.g., `CameraStation4_1_Control.AppTriggerIndex`)
+  * TriggerCount (N)
+  * RequireSyncOnTrigger1
+* Diagnostics flags: TraceEnabled, TraceEveryNPolls, TraceEveryTagRead, TraceIgnoredEdges
+
+### PlcTriggerSource
+
+* Uses PeriodicTimer based on ReadDelayMs
+* For each group: GroupMonitor.PollOnce()
+* GroupMonitor:
+
+  * Creates `Tag[]` = BaseTag.1..BaseTag.N
+  * Tracks `_prev`, `_armed`, `_lastLowTicks`, `_synced`
+  * Rising edge detected when `_prev==0 && value==1 && armed`
+  * Re-arm only after sustained LOW for MinLowMs
+  * Sync gating: ignore triggers 2..N until trigger1 is seen after startup
+  * Fan-out: one edge yields TriggerEvent for all cameras in CameraIds
+
+### Important runtime note
+
+* A “weird frame order issue” was caused by inverted PLC timing tags between cameras; once fixed behavior became stable.
+* DrainQueue in HALCON capture was kept for safety to always grab latest frame when camera is in continuous/armed behavior.
+
+---
+
+## 5) HALCON Camera Capture (Infrastructure)
+
+### HalconGigECamera
+
+* Opens via HDev procedures (Start/Close)
+* Uses grab async
+* Uses `DrainQueue(handle)` before grabbing
+* Retry on HALCON error 5322 once
+* Reconnect with backoff if needed
+* For failure: returns an uninitialized HImage placeholder (so cycle doesn’t stall)
+
+---
+
+## 6) Offline/Online Toggle (Infrastructure DI)
+
+Needed ability to switch:
+
+* **Offline**: FolderReplayCamera + DummyTriggerSource
+* **Online**: PlcTriggerSource + HalconGigECamera
+
+Refactor: moved registrations into “modules” like:
+
+* `AddOfflineIO(...)`
+* `AddOnlineIO(...)`
+* `AddImageLoggingModule(...)`
+* `AddInspectionModule(...)`
+* `AddSinksModule(...)`
+
+Hard-coded toggle used for now.
+
+---
+
+## 7) Gamma Preprocessing Decision + Implementation
+
+### Why preprocess stage exists
+
+* Gamma enhancement is considered a preprocessing transform, not an “inspection step.”
+* Must be done once and reused for:
+
+  * UI display (show processed)
+  * inspection input (avoid redoing gamma)
+  * image logging (log processed)
+
+### GammaPreprocessor (IFramePreprocessor)
+
+* Hardcoded Enabled + skip-cameras list (temporary until recipe system)
+* If raw image null/uninitialized → pass-through
+* Calls `HOperatorSet.GammaImage(...)`
+* Produces new `FrameArrived` with cloned processed image
+* On failure → fall back to raw
+
+### Disposal rules implemented
+
+* `RawFrameArrived` and `FrameArrived` are `IDisposable` and own their HImage.
+* **CameraDispatcherService** writes raw frames only; does not dispose.
+* **FramePreprocessService**:
+
+  * If preprocessor produced a different object → dispose raw immediately.
+  * Observers get processed; they must clone if keeping.
+* **InspectionService** disposes processed frame in finally.
+* UI clones `CopyImage()` and tiles own + dispose the UI copy when replaced.
+
+---
+
+## 8) UI (WPF + HALCON SmartWindow) Layout Evolution
+
+### Current UI model
+
+* `CycleFramesStore` holds `ObservableCollection<FrameTileViewModel>` created from plan triggers.
+* `SmartWindowFrameObserver` listens to `FrameArrived`, clones `CopyImage()`, dispatches to UI thread and calls `store.UpdateFrame(...)`.
+* `FrameTileViewModel` already disposes previous HImage when replaced.
+* XAML uses ItemsControl grouping by camera.
+
+### Layout request changes
+
+* Started with global “rows-per-camera” vs “columns-per-camera” toggle.
+* Added per-camera override support (`CameraTilesLayout`: UseGlobal/ForceRow/ForceColumn).
+* Later asked for more complex grouping:
+
+  * group “Cam1|Cam2”
+  * group “S5Cam1|S5Cam2|S5Cam3”
+  * ordering and flow: top-to-bottom for some, side-by-side cameras, etc.
+* Eventually user requested a simpler layout: “top-to-bottom for all cameras” + cameras side-by-side.
+
+(Implementation status: UI changes were in progress; user requested simplified version.)
+
+---
+
+## 9) Memory / Performance Investigation
+
+### Symptom
+
+* Online mode RAM rises rapidly; offline mode stabilizes.
+
+### Steps
+
+* Bounded RawFrame and Frame channels (cap 30, DropOldest) attempted.
+* Observed offline stable.
+* Eventually found root cause: **Image logging module**.
+
+### Root cause conclusion
+
+* Image logging pipeline caused memory growth / backlog pressure.
+* Changes were made (bounded channels on logging) and memory stabilized.
+
+### Key learning about bounded channels
+
+* A bounded channel fills if producers write faster than consumer reads.
+* If FullMode=DropOldest or DropWrite, items can be dropped.
+* If dropped items are IDisposable, dropping without disposal can leak unless handled carefully.
+* If DropWhenBusy=false (Wait), pipeline can slow drastically due to backpressure.
+
+---
+
+## 10) Image Logging Issue: Missing Images vs Performance
+
+### Observed behavior
+
+* When setting `DropWhenBusy=false`, app becomes slow and UI goes out of sync.
+* When `DropWhenBusy=true`, app stays real-time but images are sometimes missing “randomly.”
+
+### Explanation
+
+* With `DropWhenBusy=false`, enqueue waits when log queue full → blocks preprocess loop → stalls pipeline → UI delayed/out of sync.
+* With `DropWhenBusy=true`, queue uses DropOldest → when writer can’t keep up, log items are dropped silently → missing images.
+* Old app used “fire-and-forget threads” (high concurrency) which increased throughput but risks CPU/disk thrash + unbounded memory.
+
+### Recommended tradeoff
+
+* Real-time priority: keep DropWhenBusy=true and optimize logging throughput:
+
+  * prefer JPEG over PNG
+  * increase QueueCapacity
+  * potentially controlled multi-writer design (not unlimited fire-and-forget)
+* Completeness priority: DropWhenBusy=false but accept pipeline slowdown.
+
+---
+
+## 11) Current state
+
+* Online capture stable after fixing PLC tag inversion and keeping DrainQueue.
+* Gamma preprocess pipeline working: UI shows processed images, inspections removed temporarily.
+* Image logging fixed enough to stabilize memory, but tradeoffs remain between completeness and real-time responsiveness.
+* Next focus: UI grouping/layout improvements.
+
+---
+
+## 12) Open Issues / Next Work
+
+* UI grouping:
+
+  * nested station groups (Station4 then Station5)
+  * side-by-side cameras within a station
+  * top-to-bottom trigger flow within each camera
+* If logging must save every image without slowing pipeline:
+
+  * improve writer throughput (JPEG, SSD, multi-writer)
+  * possibly change queue + disposal strategy to avoid leaks when dropping
+
+---
+
+
+More Context - Defect Assigner:
+
+Below is a **full handover-style description** of the **Defect Assignment feature** (and the supporting plumbing we added around it) in your new VisionApp architecture. This is written so you can paste it into a new chat and continue cleanly.
+
+---
+
+# Defect Assignment: What it is and how it fits into the app
+
+## The goal
+
+After YOLOX (and any other inspections) run per-frame, we want to **post-process the detections** into a **station-level summary** that:
+
+1. **Assigns each detected defect to a physical product element** (e.g., TLB1, TIB1…)
+2. Optionally assigns to a **bearer element** (B1/B2/B3) based on trigger index
+3. Applies **station-specific rename rules** (e.g., PN → TN on certain triggers)
+4. Produces a final **dictionary of counts** that is easy to:
+
+   * log to CSV in a fixed column format
+   * drive downstream actions (future: tower light, PLC output, etc.)
+
+This is *not* per-image UI overlay logic. It’s **station-level “business logic”**, built as a post-processing pipeline triggered by inspection results.
+
+---
+
+# Where Defect Assignment sits in the runtime flow
+
+## The full flow (high level)
+
+1. **Trigger + Capture**
+
+   * PLC (or Dummy) produces TriggerEvents
+   * CycleEngine produces CaptureRequests
+   * Cameras capture images -> `FrameArrived` (CycleId + TriggerKey + HImage)
+
+2. **Inspection**
+
+   * `InspectionService` reads `FrameArrived` from the channel
+   * It calls `IInspectionRunner.InspectAsync(frame)`
+   * The runner executes steps in order (YOLOX, filter, decision, etc.)
+   * Runner returns an `InspectionResult` (Pass/Score/Message + optional Visuals/Metrics)
+
+3. **Observers**
+
+   * Inspection results are published to any `IInspectionObserver`
+   * We added “Defect Assignment + Station Aggregation” observers here.
+   * This is the cleanest professional point to do “results post-processing”.
+
+Defect assignment does **not** run inside YOLOXStep itself. It runs after inspection results exist.
+
+---
+
+# Key design decision: station-level aggregation vs per-frame
+
+### Your requirement
+
+You said:
+
+* A station is considered “satisfied/complete” when all its station-specific EndTriggers are received (e.g. Station5 complete when `S5Cam1[5], S5Cam2[5], S5Cam3[5], S5Cam4[5]` are received).
+* But the overall cycle completes only when *all* EndTriggers across all stations are received.
+
+So Defect Assignment needs to:
+
+* **accumulate counts across many frames** (many triggers, many cameras)
+* **flush/write once per station completion**
+* still allow the whole app cycle to continue until every station is complete
+
+That’s why we introduced:
+
+* **observer** (listens per inspection result)
+* **accumulator** (stores per-cycle/per-station state)
+* **sink** (writes CSV row / output)
+
+---
+
+# What we added for Defect Assignment
+
+## 1) Config model (Infrastructure)
+
+### `DefectAssignmentOptions` (bound from appsettings.json)
+
+Location suggestion:
+
+* `VisionApp.Infrastructure/Inspection/DefectAssignment/DefectAssignmentOptions.cs`
+
+Purpose:
+
+* Holds global settings + station-specific mapping rules
+
+Important fields:
+
+* `SectionName = "DefectAssignment"`
+* `InputOutputKey` (which step output we use as detections input)
+
+  * you chose: **"YoloX_Filtered"** (we want filtered boxes, not raw overlap boxes)
+* `Stations` list of per-station configs
+
+### `StationDefectAssignmentOptions`
+
+Purpose:
+
+* Defines mapping rules for a single station.
+
+Fields:
+
+* `StationKey` (e.g. "Station5")
+* `BearerByTriggerIndex` dictionary (int → string)
+
+  * e.g. `{1:"B1", 3:"B2", 5:"B3"}`
+* `CameraElements` dictionary (cameraId → string[])
+
+  * e.g. `S5Cam1: ["TLB1","TIB1"]`
+  * supports 2 elements now, and is designed to support **3+ elements later** (split into N vertical segments)
+* `PnToTn_MaxTriggerIndex`
+
+  * you set to 4 (PN becomes TN for triggers 1..4)
+
+This matches your JSON:
+
+```json
+"DefectAssignment": {
+  "InputOutputKey": "YoloX_Filtered",
+  "Stations": [
+    {
+      "StationKey": "Station5",
+      "BearerByTriggerIndex": { "1": "B1", "3": "B2", "5": "B3" },
+      "CameraElements": {
+        "S5Cam1": ["TLB1","TIB1"],
+        "S5Cam2": ["TIB2","TIB3"],
+        "S5Cam3": ["TIB4","TIB5"],
+        "S5Cam4": ["TIB6","TLB2"]
+      },
+      "PnToTn_MaxTriggerIndex": 4
+    }
+  ]
+}
+```
+
+---
+
+## 2) Locator abstraction (Core interface + Infrastructure implementation)
+
+### Why we needed it
+
+We don’t want the observer to have hardcoded station mappings.
+So the observer asks a “locator”:
+
+> “Given stationKey + cameraId + triggerIndex + imageWidth + xCenter, what board element + bearer should this defect belong to?”
+
+### Interface (Core)
+
+Location suggestion:
+
+* `VisionApp.Core/Interfaces/IDefectElementLocator.cs`
+
+It returns:
+
+* `boardElement` (e.g. TIB3)
+* `bearerElement` (e.g. B2)
+
+### Implementation (Infrastructure)
+
+`ConfigDefectElementLocator`
+Location suggestion:
+
+* `VisionApp.Infrastructure/Inspection/Assignment/ConfigDefectElementLocator.cs`
+
+How it works:
+
+1. Finds station config by `stationKey`
+2. `bearerElement` = `BearerByTriggerIndex[triggerIndex]` if present else "Unknown"
+3. `boardElement`:
+
+   * gets `elements[]` for that camera (2/3/4…)
+   * splits image width into N equal segments
+   * segment index = floor(xCenter / (imageWidth / N))
+   * boardElement = elements[segmentIndex]
+4. Designed so if a camera later has 3 boards, you just provide 3 element names and it works.
+
+---
+
+## 3) Defect assignment rules (the core “business rules”)
+
+These rules are applied per detection:
+
+### A) Determine defect “center X”
+
+For each YOLO detection:
+
+* `cx = rect.X + rect.Width/2`
+
+### B) Determine element mapping
+
+Ask `IDefectElementLocator.TryLocate(...)`:
+
+* returns `(boardElement, bearerElement)`
+
+### C) Class-based counting rule
+
+You specified:
+
+1. **PN and TN are bearer-based**
+2. Everything else (RN, PL, ST, FN) is board-based
+
+So:
+
+* if defect is PN/TN → key uses bearer
+* else → key uses board element
+
+### D) Rename rule (station specific)
+
+You specified:
+
+* PN becomes TN for trigger 1..4
+* Also bearer visibility is based on triggers:
+
+  * B1 only visible on trigger 1
+  * B2 only visible on trigger 3
+  * B3 only visible on trigger 5
+
+So logic:
+
+* if label == PN and triggerIndex <= PnToTn_MaxTriggerIndex → treat label = TN
+* still bearer-based
+* if bearerElement == Unknown → typically ignore (or count under Unknown if you want later)
+
+### E) Output format keys
+
+We count into keys shaped like:
+
+* Bearer-based: `"TN.B2"` or `"PN.B3"`
+* Board-based: `"RN.TIB4"`, `"PL.TLB2"`, etc.
+
+That format matches your old CSV structure (defect group + element column mapping).
+
+---
+
+## 4) Station-level accumulator (Infrastructure)
+
+Purpose:
+
+* Store counts across many frames until a station is “complete”.
+
+What it stores per cycle+station:
+
+* CycleId
+* StationKey
+* per-camera/per-trigger seen tracking
+* aggregated counts dictionary: `Dictionary<string,int>` for keys like `"RN.TIB4"`
+
+It receives per frame:
+
+* InspectionResult (CycleId + TriggerKey)
+* and reads the detection list (from Visuals or raw step output if you choose)
+
+Then:
+
+* updates counts
+* marks that TriggerKey as seen for that station
+
+### Station completion condition
+
+For station completion, we check:
+
+* “Have we received all the EndTriggers for that station?”
+
+  * Station5 EndTriggers are: `S5Cam1[5], S5Cam2[5], S5Cam3[5], S5Cam4[5]`
+
+Important:
+
+* The CycleEngine still waits for *all* stations end triggers to complete the overall cycle.
+* But the station accumulator can flush earlier when Station5 end triggers are all seen.
+
+---
+
+## 5) Observer that drives the accumulator (Core interface + Infrastructure class)
+
+### Existing Core contract
+
+You already have:
+
+```csharp
+public interface IInspectionObserver
+{
+    Task OnInspectionCompletedAsync(InspectionResult result, CancellationToken ct);
+}
+```
+
+This is the correct place to hang defect assignment logic.
+
+### Infrastructure observer: StationDefectAssignmentObserver
+
+This observer:
+
+1. Runs for every `InspectionResult`
+2. Resolves `stationKey` for the camera via `ICameraStationResolver` (your existing camera→station mapping)
+3. Checks if station has defect assignment config
+4. Extracts detections from the result (filtered boxes)
+5. For each detection:
+
+   * compute cx
+   * locate board/bearer
+   * apply PN→TN rename rule if needed
+   * decide bearer-based vs board-based
+   * increment the final count key
+6. Pushes this into the station cycle accumulator
+7. If station complete:
+
+   * flushes to sink (CSV sink)
+
+This step is “post processing”.
+Not every customer will use it, so you can disable it with:
+
+* not registering the observer
+* or config-based enable flag (recommended later)
+
+---
+
+## 6) Sink abstraction + CSV sink
+
+### Why a sink?
+
+To keep the app clean and testable:
+
+* the observer produces a “row model”
+* the sink decides where/how to output (CSV now, DB later, MQTT later, etc.)
+
+### The dependency rule you hit (important!)
+
+You got the error:
+
+> VisionApp.Core can’t reference VisionApp.Infrastructure
+
+That is correct and expected.
+**Core should never reference Infrastructure.**
+
+So the professional rule is:
+
+* Core defines *interfaces/contracts*
+* Infrastructure implements them
+
+Therefore:
+✅ `IStationCycleSink` belongs in **VisionApp.Core.Interfaces**
+✅ `StationDefaultRowCsvSink` belongs in **VisionApp.Infrastructure**
+
+If you put a sink interface in Core that references an Infrastructure namespace/type, you’ll get circular dependency errors.
+
+---
+
+## 7) “Shift resolver” dependency
+
+You hit this DI error:
+
+> Unable to resolve service for type IShiftResolver while attempting to activate StationDefectAssignmentObserver
+
+That means the observer constructor depends on `IShiftResolver`.
+
+Professional solution:
+
+* Put `IShiftResolver` interface in **Core.Interfaces**
+* Put a default implementation in Infrastructure:
+
+  * e.g. `SimpleShiftResolver` (time-based shift mapping)
+  * or a `NullShiftResolver` (always Shift=0) for now
+* Register one in DI so the observer can be created.
+
+This keeps shift logic swappable per customer.
+
+---
+
+# YOLOX output + filtered boxes (what defect assignment consumes)
+
+## The “detections” source
+
+You upgraded `YoloXOutput` to carry per detection probability.
+So instead of old `LabelRects`, you now have something like:
+
+* `Detections: IReadOnlyList<(string Label, Rect Rect, double Probability)>`
+
+### Why this matters
+
+* You wanted probabilities for logging and later CSV
+* UI overlays can now show per-box confidence
+* Filtering steps can preserve or drop detections without losing the score
+
+## Filter key: “YoloX_Filtered”
+
+You decided:
+
+* defect assignment and UI overlays should use **filtered boxes**, not raw.
+  So:
+* `VerticalBandFilterStep` writes a new YoloXOutput under `"YoloX_Filtered"`
+* SequentialInspectionRunner prefers `"YoloX_Filtered"` when building `InspectionVisuals`
+
+Your runner’s ExtractVisuals logic does exactly that:
+
+* If `"YoloX_Filtered"` exists → overlays come from it
+* Else fallback to `"YoloX"`
+
+And it normalizes UI step name as `"YoloX"` so UI doesn’t have to change.
+
+---
+
+# DI wiring: what was registered in AddInspectionModule
+
+Your module now includes:
+
+1. Preprocess options + preprocessor switch
+2. Camera station resolver options + resolver
+3. Station pipeline builders (Station4PipelineBuilder, Station5PipelineBuilder)
+4. `IInspectionRunner` from `InspectionBootstrapperV1.Build(sp)`
+5. Defect assignment options binding
+6. Locator implementation
+7. Station cycle aggregation/observer(s)
+8. Sink implementation
+9. Shift resolver implementation (must be added to fix your startup error)
+
+The big principle:
+
+* **InspectionService** runs inspection
+* **Observers** handle “after inspection” actions:
+
+  * UI updates (SmartWindowFrameObserver)
+  * station-level defect assignment + CSV logging
+  * later: tower light / PLC outputs
+
+---
+
+# What’s station-specific vs shared
+
+## Station-specific (by config or builder)
+
+* bearer mapping per trigger
+* camera element mapping (2/3/4 elements per camera)
+* PN→TN rename trigger window
+* which classes are bearer-based vs board-based (you said PN/TN only; can differ later)
+* which triggers are end triggers for station completion (derived from CapturePlan EndTriggers subset)
+
+## Shared across all stations
+
+* “how to segment by X”
+* accumulator mechanics
+* sink mechanics
+* observer wiring
+
+---
+
+# Where to breakpoint to verify defect assignment works
+
+Best breakpoints (in order):
+
+1. `StationDefectAssignmentObserver.OnInspectionCompletedAsync`
+
+   * confirms observer is receiving results
+
+2. `ConfigDefectElementLocator.TryLocate`
+
+   * confirms mapping is correct:
+
+     * board element chosen properly from X
+     * bearer chosen properly from trigger index
+
+3. Rename rule area (PN→TN)
+
+   * verify triggerIndex <= 4 changes label
+
+4. Station completion check (“did we see all station end triggers?”)
+
+   * verify it flushes only once per cycle+station
+
+5. `StationDefaultRowCsvSink.AppendRow(...)`
+
+   * verify final output columns and values
+
+---
+
+# Summary of “Core vs Infrastructure” (important for your new chat)
+
+* **Core**: domain + interfaces only (no infrastructure references)
+
+  * `IDefectElementLocator`, `IInspectionObserver`, `IStationCycleSink`, `IShiftResolver`, etc.
+
+* **Infrastructure**: concrete implementations
+
+  * `ConfigDefectElementLocator`
+  * `StationDefectAssignmentObserver`
+  * `StationDefaultRowCsvSink`
+  * `SimpleShiftResolver/NullShiftResolver`
+  * Options binding classes can live in Infrastructure (since they’re implementation detail)
+
+This avoids circular dependencies and keeps the solution “professional”.
+
+---
+
+More Context:
+
+([Past chat][1])([Past chat][1])([Past chat][2])([Past chat][2])([Past chat][1])
+
+Absolutely — here’s a **handoff-quality summary** of what we did in this chat, plus a **clear summary of what I attempted for Station 4** (and why it produced lots of errors).
+
+---
+
+## 1) What we built and stabilized in this chat (working parts)
+
+### A) Defect Assignment pipeline (Station 5 working)
+
+You already had a working “Defect Assignment” concept for Station 5:
+
+* You run YOLOX (sometimes not on every trigger)
+* You take the YOLO detections (boxes) from a specific output key (e.g. `"YoloX_Filtered"`)
+* You map model labels into “group codes” (RN/PN/PL/ST/FN) using `LabelToGroup`
+* You assign each detection to an **element**, producing final keys like:
+
+  * `RN.TLB1`, `ST.TIB4`, `PN.B1`, etc.
+* You aggregate counts across multiple triggers in the cycle, and only “finalize” once the station’s end triggers have been seen.
+* Once finalized, you produce one “row” object (`StationDefectRow`) containing:
+
+  * CycleId
+  * StationKey
+  * Shift, Date, Time
+  * Counts dictionary (key → count)
+
+This part was working for Station 5 using config like:
+
+* `BearerByTriggerIndex`: `1->B1, 3->B2, 5->B3`
+* `CameraElements`: board segmentation per camera (e.g. S5Cam2 has `TIB2, TIB3`)
+* Plus a special rule `PnToTn_MaxTriggerIndex` to treat PN as TN early.
+
+### B) “Skipping YOLOX sometimes” design (aggressive-safe)
+
+You raised: *“Sometimes I don’t want to run YOLOX on every trigger. I only want aggregate of what we did run.”*
+
+We aligned on the **recommended approach**:
+
+* **Always track the “end triggers seen”** so cycle completion still happens.
+* Only add counts if inference actually ran and produced boxes.
+* Final row should contain counts only from what ran; missing triggers simply contribute no detections.
+
+That means the accumulator / completion logic must be **independent of inference**.
+
+---
+
+## 2) CSV writer work (StationDefectReportCsvSink)
+
+### A) Requirement
+
+You uploaded an existing CSV and said:
+
+* “I want **all columns** this file has”
+* “and in this format”
+
+So we moved toward a “wide” CSV format:
+
+* Header row contains defect group repeated across elements
+* Second header row contains element names repeated per group
+* Data row is populated by looking up keys `"{Group}.{Element}"` in the counts dictionary.
+
+You also asked if you still need other settings in appsettings — we decided:
+
+* Keep the sink configurable (enabled, root folder, station subfolder, etc.)
+* The rest can be optional/minimal for now.
+
+### B) Important note: Your actual domain record
+
+Your real domain type (current code) is:
+
+```csharp
+public sealed record StationDefectRow(
+    Guid CycleId,
+    string StationKey,
+    DateOnly Date,
+    TimeOnly Timestamp,
+    int Shift,
+    IReadOnlyDictionary<string, int> Counts
+);
+```
+
+So anything referencing fields like `ShiftId`, `ShiftDateLocal`, etc. will not compile.
+
+---
+
+## 3) PLC outbound work (bool writing + heartbeat)
+
+### A) Requirements you provided
+
+* PLC tags are BOOL type.
+* You want to set tags TRUE/FALSE per defect presence, not numeric counts:
+
+  * If `TLB1.RN = 4`, just write `TLB1.RaisedNails = true`.
+* Heartbeat:
+
+  * Toggle a tag every 2 seconds (e.g., `resultsFromApp1.Heartbeat`)
+* Tag naming pattern from PLC guy:
+
+  * `resultsFromApp1.<Element>.Defects.<DefectName>`
+* You have multiple apps:
+
+  * Station1 = App1
+  * Station2 = App2
+  * Station4+5 = App3
+* Station5 may have fewer tags
+* Station4 will have different elements/defects and may require separate config
+* You wanted the PLC output part to be **as configurable as possible**, because tag scope may change later.
+
+### B) What we attempted to implement
+
+We attempted a clean separation:
+
+1. A write-queue service to serialize PLC writes (non-blocking):
+
+   * `PlcWriteQueueService : BackgroundService, IPlcWriteQueue`
+   * Uses a bounded `Channel<PlcWriteRequest>`
+   * Caches Tag objects per tag-name in a dictionary
+2. A heartbeat service:
+
+   * `PlcHeartbeatService : BackgroundService`
+   * every 2s toggles heartbeat tag
+3. A sink that, at end-of-cycle, converts your counts to bool tags:
+
+   * `PlcStationDefectBoolSink : IStationDefectRowSink`
+   * For each defect group, if **any element** had count > 0, write a configured boolean tag.
+
+### C) libplctag constructor mismatch issue
+
+You hit:
+
+> CS1729: 'Tag' does not contain a constructor that takes 1 arguments
+
+Meaning your libplctag .NET wrapper doesn’t support `new Tag(string tagString)` the way the sample code assumed.
+So the Tag initialization code needs to be adapted to **your actual libplctag package version API** (often it’s something like setting properties then calling `Initialize()`, or using a different constructor).
+
+This wasn’t fully resolved in the final version inside this chat—so if you revert, this should be revisited cleanly in the next chat by checking the exact Tag API exposed by your referenced libplctag NuGet.
+
+---
+
+## 4) DI module / registration work (big source of runtime failures)
+
+### A) Your DI structure
+
+You have these module-style registration methods in `VisionInfrastructureModules.cs`:
+
+* `AddOfflineIO` / `AddOnlineIO`
+* `AddInferenceModule`
+* `AddInspectionModule`
+* `AddSinksModule`
+* plus later we added `AddPlcOutboundModule`
+
+### B) What went wrong (and was fixed)
+
+You had app startup issues where the UI didn’t show because **Generic Host failed to start** due to DI exceptions.
+
+Example runtime error:
+
+* Unable to resolve `StationDefectReportCsvSink` while trying to activate `FanoutStationDefectRowSink`
+
+That happened because:
+
+* You were registering some sinks only as `IStationDefectRowSink` factories, but then another class requested the **concrete** `StationDefectReportCsvSink`.
+
+### C) The pattern we ended up using
+
+We moved toward a “fanout/composite sink” pattern:
+
+* Register each concrete sink:
+
+  * `services.AddSingleton<StationDefectReportCsvSink>();`
+  * `services.AddSingleton<PlcStationDefectBoolSink>();`
+
+* Register the fanout sink as the **single** `IStationDefectRowSink` used by the observer:
+
+  * `services.AddSingleton<FanoutStationDefectRowSink>();`
+  * `services.AddSingleton<IStationDefectRowSink>(sp => sp.GetRequiredService<FanoutStationDefectRowSink>());`
+
+* Ensure `FanoutStationDefectRowSink` takes `IEnumerable<IStationDefectRowSink>` but excludes itself (or is wired explicitly to known sinks).
+
+This is the “professional” way:
+
+* Observer depends on ONE abstraction
+* Fanout handles “multiple outputs”
+* Each output sink can be enabled/disabled via options
+
+---
+
+## 5) What I attempted for Station 4 (and why it caused lots of errors)
+
+### A) Your new Station 4 requirements
+
+Station 4 assignment is **fundamentally different** from Station 5.
+
+* Two cameras (S4Cam1, S4Cam2), 4 triggers each.
+* Elements determined by trigger index:
+
+  * T1 = `B1`
+  * T2 = `B1-B2`
+  * T3 = `B2-B3`
+  * T4 = `B3`
+* Defects currently:
+
+  * End Plate Damage
+  * Contamination
+  * Tunnel Nails
+* You want to keep sides separate:
+
+  * For example apply camera-specific prefixes so that S4Cam1 vs S4Cam2 counts don’t merge.
+  * Example group codes like:
+
+    * `TLB1_SIDE_CT`, `TLB2_SIDE_CT`, etc.
+* CSV reporting:
+
+  * Prefer a **separate Station 4 report** with columns:
+
+    * defects × (B1, B1-B2, B2-B3, B3) × (side/camera)
+* PLC output:
+
+  * For now “global defect present” regardless of location/camera (true if anywhere), but keep configurable.
+
+### B) My proposed architecture approach for Station 4
+
+I tried to generalize the system so Station 4 and Station 5 could coexist cleanly:
+
+1. Introduce a station-aware “locator” (`IDefectElementLocator`) that determines:
+
+   * board element
+   * bearer element (optional)
+     based on stationKey/cameraId/triggerIndex/x-position/imageWidth.
+
+2. For Station 5:
+
+   * use x-slicing + bearer mapping + PN→TN rule.
+
+3. For Station 4:
+
+   * ignore x slicing completely.
+   * use triggerIndex→element mapping.
+   * apply camera prefix to defect group codes.
+
+4. Update CSV sink to support **per-station layout overrides** so Station 4 can write a different header layout.
+
+### C) Why it blew up with compile errors
+
+The Station 4 attempt caused a lot of errors because the code I drafted did **not match your actual current interfaces/types** (version drift):
+
+**Major mismatches:**
+
+1. **Wrong observer method name**
+
+   * Your interface expects:
+
+     * `IInspectionObserver.OnInspectionCompletedAsync(InspectionResult, CancellationToken)`
+   * The attempted code used:
+
+     * `OnInspectionResultAsync(...)`
+
+2. **Wrong InspectionResult shape**
+
+   * Attempted code referenced:
+
+     * `result.Frame`, `frame.Key.StationKey`, `frame.Key.TriggerIndex`
+   * Your real `InspectionResult` uses:
+
+     * `result.Key.CameraId`
+     * `result.Key.Index` (trigger index)
+     * station is resolved via `ICameraStationResolver`
+
+3. **Wrong accumulator API**
+
+   * Attempted code used methods like:
+
+     * `AddTriggerSeen`, `AddCount`, `TryBuildRowAndClear`
+   * Your real accumulator has:
+
+     * `AddCounts(...)`
+     * `MarkEndSeen(...)`
+     * `TryComplete(...)`
+
+4. **Wrong StationDefectRow fields**
+
+   * Attempted CSV sink referenced:
+
+     * `ShiftId`, `ShiftDateLocal`
+   * Your real row only has:
+
+     * `Shift` (int), `Date` (DateOnly), `Timestamp` (TimeOnly)
+
+So basically: the Station 4 implementation attempt was conceptually aligned with your needs, but technically mismatched with your actual codebase, so it produced lots of compile errors.
+
+---
+
+## 6) Where you were at when you decided to revert
+
+* Station 5 defect assignment + CSV + PLC outbound architecture: **conceptually set**
+* DI pitfalls were discovered and fixed once already
+* Station 4 attempt caused many compile errors due to mismatched types/interfaces
+* You plan to revert and restart Station 4 cleanly in a new chat.
+
+---
+
+## 7) What to bring into the next chat (copy/paste “handoff brief”)
+
+**Goal:** Add Station 4 defect assignment alongside existing Station 5, without breaking working Station 5.
+
+**Known working foundation:**
+
+* Station 5 assignment: counts dictionary keys `"{Group}.{Element}"`
+* Accumulator API: `AddCounts`, `MarkEndSeen`, `TryComplete`
+* Row type: `StationDefectRow(CycleId, StationKey, Date, Timestamp, Shift, Counts)`
+* Sink interface: `IStationDefectRowSink.WriteAsync(row)`
+* Station5 config: LabelToGroup, CameraElements, BearerByTriggerIndex, PnToTn_MaxTriggerIndex
+* PLC outbound: bool tags + heartbeat (needs correct libplctag Tag API)
+
+**Station 4 requirements:**
+
+* Trigger-index element mapping: 1=B1, 2=B1-B2, 3=B2-B3, 4=B3
+* Two cameras; keep separate via camera-specific group prefixes
+* Separate Station 4 CSV format preferred
+
+**Reason last attempt failed:**
+
+* Used wrong method names (`OnInspectionResultAsync`), wrong InspectionResult shape (`result.Frame`), wrong accumulator methods, wrong row fields.
+
+---
+
+If you want, when you start the new chat, paste ONLY these three things and we can rebuild Station 4 cleanly in one pass:
+
+1. `IInspectionObserver` interface
+2. `InspectionResult` type (full record/class)
+3. `StationDefectRow` + `StationDefectAccumulator` (you already pasted these)
+
+That guarantees the next Station 4 implementation will compile first try.
+
+[1]: https://chatgpt.com/c/697ac800-a3b4-8323-b4c0-1783d97faefa "YOLOX Filter Aggregation"
+[2]: https://chatgpt.com/c/697fe624-3170-839d-854e-0839ccc2117f "Fix JSON Structure"
+
+---------------------------------
+STATION 4 SPECIFIC CONEXTFOR ADDITIONAL INFORMATION (Conversation):
+
+Me: I have actually gotten more information regarding my Station 4 Frame and Defect Assignment. It is totally different to Station 5.
+
+Existing Station 5 Defect Assignment rules:
+
+"DefectAssignment": {
+  "InputOutputKey": "YoloX_Filtered",
+  "LabelToGroup": {
+    "Raised_Nail": "RN",
+    "Protruding_Nail": "PN",
+    "Plastic": "PL",
+    "Staple": "ST",
+    "FreeStandingNail": "FN"
+  },
+  "Stations": [
+    {
+      "StationKey": "Station5",
+      "BearerByTriggerIndex": {
+        "1": "B1",
+        "3": "B2",
+        "5": "B3"
+      },
+      "CameraElements": {
+        "S5Cam1": [
+          "TLB1",
+          "TIB1"
+        ],
+        "S5Cam2": [
+          "TIB2",
+          "TIB3"
+        ],
+        "S5Cam3": [
+          "TIB4",
+          "TIB5"
+        ],
+        "S5Cam4": [
+          "TIB6",
+          "TLB2"
+        ]
+      },
+      "PnToTn_MaxTriggerIndex": 4
+    }
+  ]
+
+Based on the information I have for Station 4. Currently I need to detect 3 types of defects. 1. End Plate Damage, 2. Contamination, 3. Tunnel Nails. I need to ability to add more in the future.
+While this station has 2 cameras that take 4 triggers and produce 4 images/ frame.
+This is the element configuration we want to use. Frame 1/ Trigger 1 = "B1", Frame 2/ Trigger 2 = "B1-B2", Frame 3/ Trigger 3 = "B2-B3", Frame 4/ Trigger 4 = "B3".
+Also, for now, I dont need special rules like PnToTn that exists in Station 5 assignment. However, it would be nice to have the ability or provision to add this in the future.
+
+
+I have attached all the latest .cs files to this message. Please go through it for proper and latest context and state of the application.
+
+Once done, please break down the process to me on how to go ahead with Station4, once I understand and agree on it, we can go to writing code.
+
+
+AI: ([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])
+
+Nice — this is a clean kind of “Station-specific rule divergence”, and your current architecture is already **90% set up** to support it. The only real missing piece is: **Defect assignment needs a per-station “element mapping strategy.”**
+
+Right now, Station5 uses a **hybrid strategy**:
+
+* **Most defects** (RN/PL/ST/FN, etc.) are assigned by **splitting each camera image into fixed “elements”** (TLB1, TIB1… etc.) based on X position.
+* **Bearer-related defects** (PN → maybe TN) are assigned by **trigger index** using `BearerByTriggerIndex` (1→B1, 3→B2, 5→B3).
+
+Station4 (based on what you’ve learned) is different:
+
+* You want **all Station4 defects** to be assigned by **trigger index**:
+
+  * Trigger 1 → `B1`
+  * Trigger 2 → `B1-B2`
+  * Trigger 3 → `B2-B3`
+  * Trigger 4 → `B3`
+* And you *don’t* currently need extra rules like PN→TN, but you want “provision” for rules later.
+
+Below is the “professional” way to proceed with minimal disruption.
+
+---
+
+## 1) Keep the pipeline exactly the same up to `YoloX_Filtered`
+
+Nothing changes in capture, inference, filtering, or inspection execution.
+
+Your current flow is:
+
+1. Trigger comes in (`TriggerEvent`)
+2. Capture request generated (`CaptureRequest`)
+3. Frame arrives
+4. Station pipeline runs (Station4/Station5 pipeline builder)
+5. YOLOX produces detections
+6. Post-filter produces `YoloX_Filtered`
+7. `StationDefectAssignmentObserver` converts detections → `(defectGroup.element) counts`
+8. Accumulator waits for station end triggers, then emits a `StationDefectRow`
+9. Sinks write CSV and/or PLC bools
+
+**Station4 differences only belong in step 7** (assignment), not in inference or earlier.
+
+---
+
+## 2) Introduce a per-station “assignment mode” (the key change)
+
+Right now your Station5 assignment logic is effectively:
+
+* If label is PN/TN → use trigger→bearer mapping
+* Else → use camera segment mapping (CameraElements)
+
+Station4 needs:
+
+* **Always use trigger→element mapping** (for every defect label)
+
+### The professional pattern
+
+Add a per-station switch like:
+
+* `AssignmentMode = "CameraSegments"` (Station5 default)
+* `AssignmentMode = "TriggerElements"` (Station4)
+
+And store the mapping:
+
+* `TriggerIndex -> ElementName` (Station4 uses this)
+* Station5 can continue using `BearerByTriggerIndex` for PN/TN (or you can unify naming later)
+
+This makes Station4 a **config-only station addition**, not a “hardcoded special case station.”
+
+---
+
+## 3) Update config to include Station4 in DefectAssignment
+
+Your current `DefectAssignment.Stations` only contains Station5. That’s why Station4 currently can’t assign anything even if it’s running.
+
+For Station4 you’ll add:
+
+* StationKey = `Station4`
+* Trigger→Element mapping:
+
+  * 1: B1
+  * 2: B1-B2
+  * 3: B2-B3
+  * 4: B3
+* AssignmentMode = TriggerElements (new field you’ll add)
+
+Also update `LabelToGroup` to include your Station4 defects:
+
+* End Plate Damage
+* Contamination
+* Tunnel Nails
+  …and keep it extendable.
+
+### Important side note
+
+Your CSV sink is **driven by `StationDefectReportCsv.DefectGroups` and `.Elements`**, so you’ll also want to add:
+
+* Elements: `B1-B2`, `B2-B3`
+* DefectGroups: whatever codes you choose for those 3 defects (or reuse existing ones like `DMG`, `TN`, etc.)
+
+That way the CSV file has the right columns and your station4 counts appear in the report.
+
+---
+
+## 4) Confirm your station completion logic will flush Station4 rows
+
+Your accumulator only flushes after it has seen the station’s **end triggers**.
+
+That set comes from the capture plan (`CapturePlan.EndTriggers`) and then mapped into station buckets.
+
+So for Station4 to ever emit a row you need:
+
+* At least one Station4 trigger key in `CapturePlan.EndTriggers`
+* Ideally the *last trigger(s)* for that station, e.g. trigger index 4 for each S4 camera (depending on how your plan is defined)
+
+If Station4 “never finishes” you’ll see:
+
+* Results are processed
+* But no CSV/PLC output for Station4 because the accumulator never becomes complete
+
+This is a mechanical step, but it’s commonly the reason people think “assignment doesn’t work.”
+
+---
+
+## 5) Future-proofing for “special rules” (like PN→TN)
+
+You already have a Station5-specific rule (`PnToTn_MaxTriggerIndex`).
+
+The best way to future-proof Station4 without overengineering:
+
+* Keep rule fields optional per station (like you already do)
+* Only apply them if relevant labels exist for that station
+
+So Station4 can start with “no rules,” but later you can add rules in config without changing your pipeline shape.
+
+---
+
+## 6) One potential trap: PLC tag collisions (Station4 vs Station5)
+
+Both stations involve bearer-style names (`B1`, `B2`, `B3`) — and Station4 adds `B1-B2`, `B2-B3`.
+
+Your current PLC sink design is *capable*, but **the PLC naming scheme must separate stations somehow**, otherwise you risk collisions like:
+
+* Station5 sets `resultsFromAppX.B1.Defects.TunnelNails`
+* Station4 also sets `resultsFromAppX.B1.Defects.TunnelNails`
+
+If they’re meant to be separate stations, you need either:
+
+* Base tag per station (recommended): `resultsFromApp3_Station4` vs `resultsFromApp3_Station5`, OR
+* Station included in the tag path: `resultsFromApp3.Station4.B1.Defects...`
+
+You don’t need to solve this *right now* to implement assignment, but you should decide before enabling PLC outbound for both stations in the same app.
+
+---
+
+# The exact “how to proceed” checklist for Station4
+
+1. **Decide defect group codes** for Station4 labels
+   Example:
+
+   * EndPlateDamage → `DMG` (you already have DMG in CSV options)
+   * Contamination → `CT` (you may add CT to CSV groups)
+   * TunnelNails → `TN` (already exists)
+
+2. **Add Station4 entry** under `DefectAssignment.Stations`
+   With trigger→element mapping (1..4) and a new `AssignmentMode = TriggerElements`.
+
+3. **Extend defect assignment logic** to support Station4 mode
+
+   * Station5 remains as-is
+   * Station4: ignore `CameraElements` and assign everything to the element given by trigger index
+
+4. **Update `StationDefectReportCsv.Elements`** to include `B1-B2` and `B2-B3`
+   And add any new defect groups you introduce (like `CT`) to `DefectGroups`.
+
+5. **Verify CapturePlan end triggers for Station4**
+   Ensure the station completes and emits a StationDefectRow.
+
+6. **Test in offline mode** (FolderReplay + DummyTrigger)
+   Confirm Station4 rows appear in CSV with columns populated under the correct element.
+
+---
+
+## 3 quick confirmations that affect the final implementation
+
+I’m going to assume these are true unless you tell me otherwise (and we can still implement it safely either way):
+
+1. When trigger index = 2, do **both** `S4Cam1` and `S4Cam2` correspond to the same physical region `B1-B2`?
+   (I’m assuming yes, and we sum them together.)
+
+2. Do you want `B1-B2` and `B2-B3` to stay as **their own elements** (exactly as named), or do you eventually want them to “fan out” into both adjacent bearers?
+   (Right now you said keep them exactly, so we will.)
+
+3. For PLC output: will Station4 and Station5 share the same `BaseTag`, or will PLC give you separate station namespaces?
+   (This matters when you enable PLC outbound for both.)
+
+---
+
+If you’re happy with the approach above, the next step is straightforward: we implement the new **Station assignment mode** + config changes, and you’ll be able to plug Station4 in cleanly without bloating the inspection module or creating Station4-specific hacks.
+
+[1]: https://chatgpt.com/c/697ac800-a3b4-8323-b4c0-1783d97faefa "YOLOX Filter Aggregation"
+
+
+ME: Okay! I am very happy with the approach.
+
+Few clarifications for you, so it helps when you are giving me the code.
+
+"Update StationDefectReportCsv.Elements" -> In terms of the CSV reporting, am thinking, maybe its a wiser idea to generate a separate report for Station 4. I can later combine this myself, or have the custom deal with the logic on their data processing end. This way I dont have to worry about aggregating or dealing with Station 4 and 5 having same element names.
+So basically the new CSV file being generated for Station 4 will have the assigned Defects and each of these will have B1, B1-B2, B2-B3 and B3 columns.
+
+"When trigger index = 2, do both S4Cam1 and S4Cam2 correspond to the same physical region B1-B2?
+(I’m assuming yes, and we sum them together.)" -> And yes, both of these cameras corresponds to the same physical regions each time an image is captured on them, since they are looking at the same elements of the same pallet, but from the opposite sides. => However, it would be great, if we could keep them seperate for now, this way it would be easier to identify which side of the tunnel or side of the pallet these defects exists. How about S4Cam1 defects we assign the prefix "TLB1_" and S4 Cam2, weassign the prefix "TLB2".
+
+Now with this new way of assigning defects per cam, each defect will have 2x columns. One from each side.
+
+therefore,
+
+"Decide defect group codes for Station4 labels" -> For this, basically Station 4 cameras are side cameras that look into the side and into the tunnel gap of the pallet. So for now, every defect we assign, lets add a prefix to the defects codes like "TLB1_SIDE_" and "TLB2_SIDE_, depending on S4Cam2 or S4Cam2?
+So for example for S4Cam2 => EndPlateDamage will become "TLB2_SIDE_END_PLT_DMG",
+Contamination will become "TLB2_SIDE_CT",
+And TunnelNails will become "TLB2_SIDE_TN".
+Give me the ability to interchange these suffixes per camera later of if I need to.
+
+"For PLC output: will Station4 and Station5 share the same BaseTag, or will PLC give you separate station namespaces?" -> For now the PLC only cameras if a specific defect exists on the pallet or not, regardless of the position or the camera its coming from. Hence the boolean we set to true.
+
+So basically, once the inspections and aggregration ends, if a specific contamination exists in either of the stations, we just set that to true. For now, please keep the PLC part as configurable as possible, i'll talk to the PLC guy later on and have this sorted. If needed, I'll have him create more tags for us.
+
+Let me know if you need any more informaiton.
+
+# More context:
+
+Below is a “delta handoff” summary of **only what we worked on in this chat**, intended to be appended to your existing context doc.
+
+---
+
+## 1) Station 5 CSV report: options binding + DI wiring
+
+### What you had
+
+You had Station 5 defect assignment + CSV reporting wired in DI:
+
+* `Station5DefectAssignmentOptions` bound from JSON
+* `IDefectElementLocator` → `ConfigDefectElementLocator`
+* `Station5DefectReportCsvOptions` bound from JSON
+* `Station5DefectReportCsvSink` registered
+
+And you confirmed the CSV output format was correct (two header rows, then a wide row with all defect-group/element columns).
+
+### The bug you hit
+
+`Station5DefectReportCsvOptions` was **behaving like it was merging “defaults” + JSON**, so you’d see columns you didn’t want (because defaults were non-empty).
+
+This happened because the options object already had non-empty default arrays, so even though JSON binding worked, you effectively ended up with values you didn’t intend (your “defaults” were influencing output).
+
+### What fixed it
+
+You changed defaults to empty arrays:
+
+```csharp
+public string[] DefectGroups { get; init; } = Array.Empty<string>();
+public string[] Elements     { get; init; } = Array.Empty<string>();
+```
+
+That ensures “only what’s in JSON” drives the sink.
+
+**Answer to your question:**
+
+* `[]` and `Array.Empty<string>()` both result in an empty array, but `Array.Empty<string>()` is the better default because it avoids allocating a new array instance per options object.
+
+### Key reminder that mattered
+
+Make sure your **section name matches config**. You had both patterns at different times:
+
+* old: `"StationDefectReportCsv"`
+* new: `"Station5DefectReportCsv"`
+
+So `SectionName` and the DI `.Bind(config.GetSection(...))` must align with whatever is in `appsettings.json`.
+
+---
+
+## 2) Station 4 CSV report: derive layout from Station4DefectAssignmentOptions
+
+### What you implemented
+
+You built a Station 4 specific CSV sink that **doesn’t take explicit `DefectGroups` and `Elements` in CSV options**.
+
+Instead it derives:
+
+* `_defectGroups` from `Station4DefectAssignmentOptions` (either `DefectGroups` or `LabelToGroup.Values`)
+* `_elements` by walking the Station4 camera layout config:
+
+For each camera:
+
+* take `Prefix` (or derive a fallback)
+* for each trigger index in `TriggerElements` (ordered)
+* produce columns like: `TLB1_B1`, `TLB1_B1-B2`, … and likewise for Cam2
+
+So Station4’s CSV column plan is effectively **DefectGroups × (Prefix_TriggerElement list)**.
+
+### Why this mattered
+
+Station 4 is structurally different from Station 5, and you wanted its reporting to follow the **Station4DefectAssignment** JSON so you don’t have to maintain two different “column configuration” blocks.
+
+You said you figured out and corrected Station 4, so at this point:
+
+* Station4 CSV generation is correct and stable
+* Station5 CSV generation is correct and stable
+
+---
+
+## 3) Labels in Station pipelines: moving `classLabels` into JSON
+
+### Your current Station4PipelineBuilder
+
+You currently hardcode:
+
+```csharp
+private static readonly string[] Labels = { "EPD", "EPM", "EPG" };
+```
+
+and pass them into:
+
+```csharp
+new YoloXStep(... classLabels: Labels)
+```
+
+### The key clarification we aligned on
+
+`YoloXStep` expects a **string[]** of class labels in the **model’s true class order** (index 0..N-1). It is **not** expecting a dictionary.
+
+So when you asked:
+
+> “why can’t I just do `Labels = o.LabelToGroup.Values()`?”
+
+Main issue: `LabelToGroup.Values` gives you the **group codes** (EPD/EPM/EPG), but the model class labels are usually the **original class names** (e.g., EndPlateDamage/EndPlateMissing/EndPlateGood). Also, relying on dictionary enumeration order is fragile for “true class order” unless you explicitly control it.
+
+### Your confirmed “true class order”
+
+From JSON:
+
+```json
+"LabelToGroup": {
+  "EndPlateDamage": "EPD",
+  "EndPlateMissing": "EPM",
+  "EndPlateGood": "EPG"
+}
+```
+
+So **the correct `classLabels` array** (for YOLOXStep) should be:
+
+* `["EndPlateDamage", "EndPlateMissing", "EndPlateGood"]`
+
+…and then downstream (defect assignment + CSV) you convert those to group codes using `LabelToGroup`.
+
+### What to do (recommended pattern)
+
+Add an explicit ordered list in config (best long-term):
+
+```json
+"Station4Model": {
+  "ClassLabels": ["EndPlateDamage", "EndPlateMissing", "EndPlateGood"],
+  "Conf": 0.30,
+  "Nms": 0.45
+}
+```
+
+or, if you insist on deriving from `LabelToGroup`, derive from **keys** in a deterministic order you control (but explicit `ClassLabels` is safest).
+
+### “Over here are you sending in a string or dictionary?”
+
+Answer: you’re sending a **string[]** into `YoloXStep`. The dictionary (`LabelToGroup`) is for *mapping* later, not for model output decoding.
+
+---
+
+## 4) Halcon camera reconnection + making status visible to WPF
+
+### What you wanted
+
+* Confirm the camera reconnection/health checking loop exists
+* Expose “which camera is disconnected” to the UI so LEDs can go red/green
+* Your UI engineer will handle visuals — you just want a clean “status feed” from Infrastructure/Core into WPF
+
+### The direction we agreed on
+
+Create a small “status hub” service that:
+
+* tracks latest connectivity state per camera (`Connected/Disconnected/Error/etc`)
+* raises an event (or exposes an observable/stream) when a camera state changes
+* can be updated by your HALCON health/reconnect loop (the periodic service that already checks cameras)
+
+Then in WPF:
+
+* add a UI observer/service similar to `SmartWindowInspectionObserver`
+* it subscribes to the hub and updates a WPF store on the Dispatcher
+* ViewModels bind to that store (camera → status) and the UI engineer uses it for LEDs
+
+### Your DI question
+
+> “Do I need to just paste this into Offline method?”
+
+```csharp
+services.AddSingleton<ICameraConnectionStatusHub, CameraConnectionStatusHub>();
+```
+
+Core principle:
+
+* Register the hub **wherever the online HALCON cameras + health loop are registered** (typically in your “Online IO” module / Infrastructure module), because that’s where statuses are produced.
+* Register the WPF observer in the WPF project so it can marshal to the UI thread (Dispatcher), like your `SmartWindowInspectionObserver`.
+
+### WPF pattern reference (you showed this)
+
+Your existing observer:
+
+```csharp
+public sealed class SmartWindowInspectionObserver : IInspectionObserver
+{
+   // updates store via Dispatcher
+}
+```
+
+We mirrored the same idea for camera connectivity:
+
+* “status observer” in WPF
+* uses Dispatcher
+* updates a store (e.g., `CameraConnectionStore`) that exposes `Dictionary<CameraId, Status>`
+
+### Your UI tree screenshot question
+
+> “Does the UI engineer need to build an observer in the UI project to tap into this now?”
+
+Yes — the clean pattern is:
+
+* Infrastructure emits status changes (hub)
+* WPF subscribes + updates store on Dispatcher
+* UI binds to store
+
+You confirmed your UI engineer is now working on it.
+
+---
+
+## 5) Net result at end of this chat
+
+You reached a stable state where:
+
+* Station5 defect assignment + Station5 CSV report are working
+* Station4 CSV report is working, derived from Station4DefectAssignment config
+* You understand how to load YOLOX class labels from JSON correctly (string[] in true class order; mapping to group codes happens later)
+* You have a clear approach to surface HALCON camera connection state to WPF via a status hub + a WPF observer/store pattern (like your existing inspection observer)
+
+---
+
+Front End Context
+
+1.    UI architecture
+Pattern
+-    DI-based startup using Microsoft.Extensions.Hosting so ViewModels/Stores/Services are created via the container.
+-    UI state is split into:
+  - Shell state (what screen is shown)
+  - Navigation bar state (collapsed/expanded, width)
+  - Modal state (what modal is visible, if any)
+High-level composition
+-    MainWindow is just a host container.
+-    The visible UI is composed as:
+  - Header (top)
+  - Main content (left)
+  - Right navigation bar (right)
+  - Modal overlay (on top of everything)
+2) Folder structure
+UserControls/
+Reusable UI blocks that are dropped into screens:
+-    HeaderRow.xaml
+-    NavigationBar.xaml
+-    Modal views:
+  - ConfirmationModalView.xaml
+  - MessageModalView.xaml
+Views/
+Actual view screens / templates:
+-    HomeView.xaml
+-    FrameTileView.xaml (tile UI with image + PASS/FAIL visual)
+ViewModels/
+The UI logic:
+-    MainWindowViewModel
+-    ShellViewModel
+-    MainViewModel (Home screen VM)
+-    NavigationBarViewModel
+-    Modal VMs under:
+  - ViewModels/Modals/ConfirmationModalViewModel
+  - ViewModels/Modals/MessageModalViewModel
+Stores/
+Shared UI “state containers”:
+-    ModalStore (drives modal overlay)
+Services/
+Shared UI services:
+-    NavigationStateService (collapse state + width)
+-    ImageViewerService (opens image viewer / snapshot actions)
+-    Observers:
+  - SmartWindowFrameObserver
+  - SmartWindowInspectionObserver
+Resources/Styles/
+Central styling dictionaries:
+-    Theme.xaml
+-    Controls.xaml
+-    Typography.xaml
+-    Converters.xaml (where we registered Bool to Visibility converter)
+
+3) MainWindow layout and how it works
+MainWindow.xaml
+-    Declares DataTemplates so VMs automatically map to Views:
+  - MainViewModel -> HomeView
+  - FrameTileViewModel -> FrameTileView
+  - ConfirmationModalViewModel -> ConfirmationModalView
+  - MessageModalViewModel -> MessageModalView
+The main grid structure
+-    Row 0: HeaderRow
+-    Row 1: Main content + Right Nav Bar
+-    Modal overlay: a Border with dark translucent background that displays ModalViewModel centered when IsModalOpen == true
+MainWindowViewModel
+-    Exposes:
+  - CurrentViewModel (from ShellViewModel)
+  - NavigationBarViewModel
+  - IsModalOpen + ModalViewModel (from ModalStore)
+-    Listens to changes in ShellViewModel and ModalStore and raises OnPropertyChanged(...) so UI updates instantly.
+4) Navigation bar (collapse + commands + modal integration)
+NavigationStateService
+-    Holds IsCollapsed
+-    Holds NavBarWidth
+-    Raises PropertyChanged so multiple VMs can react.
+NavigationBarViewModel
+Responsibilities:
+-    Reads IsCollapsed and NavBarWidth from NavigationStateService
+-    Provides commands:
+  - Toggle nav
+  - Home navigation (ShellViewModel.GoHome())
+  - Open Image Logs
+  - Exit Application
+NavigationBar.xaml
+-    Right-hand panel
+-    Arrow button always visible
+-    Button grid collapses when IsCollapsed == true
+-    Width bound to NavBarWidth
+5) Modal system (Confirmation + Message)
+ModalStore
+-    Holds:
+  - ModalViewModel
+  - IsModalOpen (ModalViewModel != null)
+-    API:
+  - ShowModal(vm)
+  - CloseModal()
+  - ShowConfirmationAsync(title, message) → returns Task<bool>
+  - ShowMessage(title, message)
+Modal viewmodels
+ConfirmationModalViewModel
+-    Has Title, Message
+-    Uses TaskCompletionSource<bool> so callers can await the result
+-    Commands:
+  - OkCommand
+  - CancelCommand
+Both close the modal and complete the task.
+MessageModalViewModel
+-    Same concept but usually only an OK button (non-blocking message).
+Modal views
+-    ConfirmationModalView.xaml: shows title, message, Ok/Cancel buttons.
+-    MessageModalView.xaml: shows title, message, Ok.
+How it’s wired to UI
+-    MainWindow.xaml has modal overlay binding:
+  - Visibility bound to IsModalOpen
+  - ContentControl.Content bound to ModalViewModel
+-    DataTemplates render the correct modal view automatically.
+
+6) App Startup / DI wiring
+App.xaml.cs
+-    Uses Host builder
+-    Registers:
+  - Core pipeline services (AddVisionCore, AddVisionInfrastructure)
+  - Dispatcher
+  - Stores: CycleFramesStore, ModalStore
+  - Observers
+  - UI services
+  - ViewModels: ShellViewModel, MainWindowViewModel, NavigationBarViewModel, etc.
+  - MainWindow created via DI and shown on startup
+This is important: If something isn’t registered in DI, it won’t resolve
+7) Styling + resources approach
+-    Styles are centralized in ResourceDictionaries under Resources/Styles/.
+-    We kept resource keys consistent (important for not breaking bindings).
+-    Nav styles created:
+  - NavArrowButtonStyle
+  - NavMenuButtonStyle
+  - HeaderPanelBorderStyle (panel look)
+Converters:
+-    We used a bool-to-visibility converter and added it in a resource dictionary so all views can use it.
+
+=================================================================
+RECENT IMPLEMENTATION UPDATES (2026-04-01)
+=================================================================
+
+This section documents three major UI and inference features added to the application:
+
+------
+1) PER-CLASS CONFIDENCE THRESHOLDS FOR YOLOX DETECTION
+------
+
+Overview:
+Previously, the YoloX detection models used a single global confidence threshold for all classes.
+Now individual confidence scores can be set per class for fine-tuned control over detections.
+These thresholds are configurable in a Settings Manager UI and persisted to ProgramData.
+
+Configuration (ClassThresholdOptions):
+Location: VisionApp.Infrastructure/Inspection/Steps/ClassThresholdOptions.cs
+Structure:
+  - DefaultThreshold: global fallback (e.g., 0.4)
+  - ClassLabels: full display names (e.g., "Pinhole", "Shrinkage", "Edge Cut")
+  - IgnoreLabels: classes never shown in UI (e.g., "person", "car")
+  - PerClassThresholds: Dictionary<string, float> mapping each label to its confidence threshold
+  - Bind in appsettings.json at section: "ClassThresholds"
+
+Integration in YoloX Pipeline:
+YoloXStep (VisionApp.Infrastructure/Inspection/Steps/YoloXStep.cs):
+  - Receives IOptions<ClassThresholdOptions> in constructor
+  - Per-class filtering: if a class has a configured threshold, use it; otherwise fallback to DefaultThreshold
+  - Only detections passing the class-specific threshold are included in the filtered output
+  - Both raw and filtered detection outputs are stored in InspectionResult
+
+Settings Manager UI (new feature):
+Views/UserControls/SettingsManagerView.xaml
+  - Displays all configured classes (full names, not abbreviations)
+  - Shows current confidence threshold per class
+  - Sliders allow adjustment from 0.0 to 1.0
+  - Numeric textbox for precise input
+  - "Apply" button saves changes
+  - Reads from and writes to C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings\appsettings.json
+
+ViewModels/SettingsManagerViewModel.cs
+  - Manages ClassThresholdEntry collection (each entry = one class with current threshold)
+  - Handles loading from config
+  - Handles persisting changes to ProgramData config file
+  - Binds to SettingsManagerView for UI updates
+
+Models/ClassThresholdEntry.cs
+  - Represents one detection class and its threshold
+  - DisplayName formatted from config (CamelCase splitting, underscore substitution)
+  - CurrentThreshold property for data binding
+
+Registration in App.xaml.cs:
+  - SettingsManagerViewModel and SettingsManagerView added to DI
+  - Accessible via navigation command (right nav bar Integration point can be added)
+
+------
+2) SHIFT-BASED PRODUCTION METRICS IN STATUS FOOTER
+------
+
+Overview:
+The status footer now displays shift-aware production metrics on the right side:
+  - Current shift number
+  - Total products inspected (all outcomes)
+  - Pass count labeled "Assured" (successful inspections)
+  - Fail count labeled "Standard" (defective products)
+Metrics reset automatically when shift boundary is detected.
+
+Production Counter Store (new feature):
+Location: VisionApp.Wpf/Stores/ProductionCounterStore.cs
+Type: INotifyPropertyChanged singleton
+Properties:
+  - ShiftNumber: int (current shift ID)
+  - TotalCount: int (incremented on each inspection result)
+  - AssuredCount: int (pass count)
+  - StandardCount: int (fail count)
+- No public increment methods; only the sink modifies state
+- Raises PropertyChanged events so UI binds reactively
+
+Shift-Based Metrics Sink:
+Location: VisionApp.Infrastructure/Sinks/ShiftProductionCounterSink.cs
+Type: IResultSink (registered in DI)
+Responsibilities:
+  - Observes InspectionResult from the pipeline
+  - Reads ShiftInfo to detect shift boundaries
+  - On shift change, resets counters to 0
+  - Increments TotalCount on every result
+  - Increments AssuredCount if result.IsPass == true
+  - Increments StandardCount otherwise
+  - Updates ProductionCounterStore via Dispatcher.InvokeAsync (thread-safe UI updates)
+
+Registration in App.xaml.cs:
+  - ProductionCounterStore registered as singleton
+  - ShiftProductionCounterSink registered and added to ResultSinks collection
+
+Status Footer UI Integration:
+Location: VisionApp.Wpf/UserControls/StatusFooterView.xaml
+Layout:
+  - Left side: Camera connection status (existing)
+  - Right side: Metrics panel with proportional column grid
+    - Column 1: "Shift: {ShiftNumber}"
+    - Column 2: "Total: {TotalCount}"
+    - Column 3: "Assured: {AssuredCount}" (green text)
+    - Column 4: "Standard: {StandardCount}" (red text)
+All use <Run> text elements for inline binding and color customization
+
+StatusFooterViewModel updates:
+  - Injects ProductionCounterStore
+  - Exposes ShiftNumber, TotalCount, AssuredCount, StandardCount as pass-through properties
+  - Forwards PropertyChanged events from store to UI
+
+Shift Detection Logic:
+ShiftProductionCounterSink compares current result's ShiftInfo with last-seen ShiftInfo.
+When ShiftInfo changes (shift boundary detected):
+  - Reset all counters to 0
+  - Update ShiftNumber to new shift
+  - Subsequent results increment from clean slate
+
+------
+3) STATION GROUP LABELS (CAMERA TILE HEADERS)
+------
+
+Overview:
+Camera tiles are now visually grouped by station with configurable header labels displayed above each group.
+Labels are read from appsettings.json and render with proportional column widths matching camera distribution.
+Example: "Side Station" above Station4 tiles (2 cameras), "Bottom / Leading Station" above Station5 tiles (3 cameras)
+
+Configuration (UiFrameTitlesSettings):
+Location: VisionApp.Wpf/Models/UiFrameTitlesSettings.cs
+Extended structure:
+  - UiStationFrameTitleSettings now includes:
+    - StationKey: string (e.g., "Station4", "Station5")
+    - DisplayName: string (e.g., "Side Station", "Bottom / Leading Station")
+    - BearerByTriggerIndex: Dictionary
+    - CameraElements: List<UiFrameTitleElement>
+
+Configuration binding in appsettings.json:
+Section: "UiFrameTitles.Stations"
+Example:
+  {
+    "StationKey": "Station4",
+    "DisplayName": "Side Station",
+    "CameraElements": [ ... ]
+  }
+
+MainViewModel UI Composition:
+Location: VisionApp.Wpf/ViewModels/MainViewModel.cs
+New logic:
+  - Injects IOptions<UiFrameTitlesSettings>
+  - Builds IReadOnlyList<StationHeaderInfo> during construction
+  - StationHeaderInfo record contains:
+    - DisplayName: from UiFrameTitles.Stations[i].DisplayName
+    - StarWidth: GridLength with star weight = camera count for that station
+      (e.g., Station4 with 2 cameras → GridLength(2, GridUnitType.Star))
+  - Exposes StationHeaders property for binding in HomeView
+
+Proportional Width Calculation:
+  - Station 4: 2 cameras → 2 stars (40% of grid width)
+  - Station 5: 3 cameras → 3 stars (60% of grid width)
+  - Total: 5 cameras → 5 stars (normalized to 100%)
+  - Each column stretches proportionally; headers and tiles below stay aligned
+
+Home View Layout:
+Location: VisionApp.Wpf/Views/HomeView.xaml
+Structure changed to 2-row Grid:
+  Row 0 (Height="Auto"): Station Headers Panel
+    - Grid with 2 ColumnDefinitions
+    - Each Width bound to StationHeaders[i].StarWidth (GridLength binding)
+    - Each column contains:
+      - Border with AccentBorderBrush, rounded corners, padding
+      - TextBlock displaying DisplayName in PrimaryForeground
+  Row 1 (Height="*"): Camera Tiles Panel (unchanged)
+    - Existing ItemsControl with CameraGroups
+    - UniformGrid panel with 5 total columns
+    - Alignment preserved below headers
+
+Styling:
+  - Border: AccentBorderBrush (blue-gray theme color)
+  - Border CornerRadius: 8 (rounded appearance)
+  - TextBlock: PrimaryForeground (white text)
+  - Font: matches typography theme
+  - Padding/spacing: consistent with rest of app
+
+Runtime Behavior:
+  - When app starts, MainViewModel reads UiFrameTitles config
+  - StationHeaders populated once at startup
+  - HomeView binds to StationHeaders and renders headers immediately
+  - If appsettings.json DisplayName is modified and re-read (hot-reload scenario):
+    IOptions<T> triggers reload, StationHeaders rebuild, UI updates
+
+Integration Points:
+  - No pipeline changes needed (purely UI composition)
+  - DI: IOptions<UiFrameTitlesSettings> already registered in existing infrastructure
+  - Config: DisplayName strings in appsettings.json under UiFrameTitles.Stations array
+
+Known Behavior:
+  - Headers are read-only at runtime; DisplayName changes require app restart
+  - Camera count per station is fixed; proportional widths recalculate if CameraElements count changes
+  - If DisplayName is empty string, header renders as blank Border (no special handling)
+
+------
+4) PLC PALLETID READ-AT-TRIGGER, WRITE-AT-COMPLETION
+------
+
+Overview:
+The PLC integration has been updated to read a PalletID from the PLC control tag at the first trigger for each station, then write that same PalletID back to the results tag after all defect data. This replaces the previous HHmmss timestamp write and implements a cleaner handshake protocol.
+
+Flow:
+1. Trigger fires (index 1) for a station → PlcTriggerSource.GroupMonitor detects rising edge
+2. Reads DINT PalletID from configured control tag (e.g., "sideStation_1_Control.PalletID")
+3. Stores in IPalletIdStore keyed by station (e.g., "Station4")
+4. Cycle completes → PlcStationDefectBoolSink writes all defect bools
+5. Writes the stored PalletID DINT to results tag (e.g., "results_sideStation.PalletID")
+
+Configuration (appsettings.json):
+Location: VisionApp.Wpf/appsettings.json, PlcTriggers.Groups section
+Each trigger group now has:
+  "PalletIdControlTag": "sideStation_1_Control.PalletID"
+  "PalletIdControlTag": "sideStation_2_Control.PalletID"
+  "PalletIdControlTag": "bottomLeadingStation_Control.PalletID"
+
+PalletID Store:
+Location: VisionApp.Infrastructure/PlcOutbound/
+New files:
+  - IPalletIdStore.cs: Interface with Set(stationKey, palletId) and Get(stationKey)
+  - PalletIdStore.cs: ConcurrentDictionary<string, int> implementation (thread-safe, singleton)
+
+Trigger Source Updates:
+Location: VisionApp.Infrastructure/Triggers/PlcTriggerSource.cs
+Changes:
+  - Constructor now injects IPalletIdStore and ICameraStationResolver
+  - GroupMonitor constructor receives these deps and resolves station key from first camera
+  - InitializeTags creates a DINT Tag object for PalletIdControlTag (if configured)
+  - PollOnce: when trigIndex == 1 fires, reads DINT synchronously and calls store.Set(stationKey, value)
+  - On read failure, stores 0 (graceful degradation)
+  - Dispose cleans up PalletID tag
+
+Defect Sink Updates:
+Location: VisionApp.Infrastructure/PlcOutbound/PlcStationDefectBoolSink.cs
+Changes:
+  - Constructor now injects IPalletIdStore
+  - After enqueuing all defect bools, instead of computing HHmmss timestamp:
+    - Calls _palletIdStore.Get(row.StationKey) to retrieve the read value
+    - Enqueues PlcDintWrite with that value
+  - Tag name and config key (TimestampTagSuffix) remain the same
+  - Only the VALUE written has changed (timestamp → PalletID)
+
+DI Registration:
+Location: VisionApp.Infrastructure/DI/VisionInfrastructureModules.cs
+In AddPlcOutboundModule:
+  - IPalletIdStore registered as singleton (PalletIdStore implementation)
+
+Threading & Safety:
+  - PalletID.Set called from polling thread (PlcTriggerSource)
+  - PalletID.Get called from write queue consumer thread (PlcStationDefectBoolSink)
+  - ConcurrentDictionary ensures thread safety without additional locks
+  - DINT read is synchronous (happens once per cycle per station at trigger index 1)
+  - Cycles are sequential; no risk of next-cycle overwrite during current write
+
+Known Behavior:
+  - If PalletIdControlTag is empty/null in config, the feature is disabled for that group (graceful)
+  - If PLC read fails, 0 is written to results (logged as warning)
+  - If both S4 trigger groups have PalletIdControlTag, first to trigger index 1 wins (usually not an issue since they're the same pallet)
+
+------
+5) SERILOG FILE LOGGING (DAILY ROLLING)
+------
+
+Overview:
+The application now writes structured logs to daily rolling files in C:\ProgramData\AMV\VisionApp\0.0.1\Logs, enabling post-incident debugging and operational monitoring. Log files are created daily and old files are retained for 30 days.
+
+Configuration (App.xaml.cs):
+Location: VisionApp.Wpf/App.xaml.cs
+In OnStartup:
+  - Creates logs directory: C:\ProgramData\AMV\VisionApp\0.0.1\Logs
+  - Configures Serilog with file sink before host builder
+  - File path pattern: VisionApp-.log (e.g., VisionApp-20260401.log, VisionApp-20260402.log)
+
+Serilog Setup:
+  - MinimumLevel: Information (captures INF, WRN, ERR)
+  - RollingInterval: Day (new file per day)
+  - OutputTemplate: [Timestamp] [Level] Message + exception details
+  - RetainedFileCountLimit: 30 (auto-cleanup after 30 days)
+  - FileSizeLimitBytes: null (no per-file size limit)
+  - WriteIndented: false (compact JSON if any structured logging used)
+
+Log Format Example:
+[2026-04-01 16:45:23.456 +02:00] [INF] Camera connected: S4Cam1
+[2026-04-01 16:45:24.789 +02:00] [WRN] PalletID read failed for Station=Station4, defaulting to 0.
+[2026-04-01 16:45:25.012 +02:00] [ERR] Exception: System.IO.IOException...
+
+Integration with Host:
+  - Serilog.Logger registered in ConfigureLogging via AddSerilog(Log.Logger)
+  - Also added to debug output (AddDebug) for VS Output window visibility
+  - ClearProviders called to avoid duplicate logging
+
+Cleanup:
+In OnExit:
+  - Calls Log.CloseAndFlush() to ensure all buffered logs are written before shutdown
+
+NuGet Packages:
+  - Serilog 4.2.0
+  - Serilog.Extensions.Logging 8.0.0
+  - Serilog.Sinks.File 5.0.0
+  - Serilog.Sinks.Debug 2.0.0
+
+Log File Access:
+Field teams can:
+  - Browse logs: C:\ProgramData\AMV\VisionApp\0.0.1\Logs
+  - Open in any text editor or log viewer
+  - Analyze operational history, error patterns, trigger events
+  - Share with support for diagnostics
+
+Known Behavior:
+  - Logs are appended (not overwritten) during the same day
+  - On midnight UTC (or configured timezone), a new file is created
+  - If logs directory cannot be created, app shows error but continues
+  - If a log write fails, warning is logged but pipeline is not disrupted
+  - Old logs (>30 days) are deleted automatically on Serilog startup
+
+------
+6) PRODUCTION COUNTER PERSISTENCE ACROSS RESTARTS
+------
+
+Overview:
+The shift-based production counters (Total, Assured, Standard) now persist to disk, allowing them to survive application restarts within the same shift. If the app is restarted and the shift has changed, counters reset to 0 for the new shift.
+
+File Format & Location:
+Path: C:\ProgramData\AMV\VisionApp\0.0.1\Counts\production_counts.json
+Example content:
+{
+  "ShiftNumber": 2,
+  "ShiftDate": "2026-04-01",
+  "Total": 150,
+  "Assured": 140,
+  "Standard": 10
+}
+
+Persistence Logic:
+Location: VisionApp.Wpf/Services/ShiftProductionCounterSink.cs
+Changes:
+  - Added const paths for CountsDir and CountsFilePath
+  - Added nested CountsSnapshot DTO for JSON serialization
+  - Constructor now:
+    - Resolves current shift via _shiftResolver.Resolve(DateTimeOffset.Now)
+    - Pre-sets _lastShift = currentShift (prevents spurious reset on first cycle)
+    - Calls TryRestoreFromFile(currentShift)
+  - UpdateMetrics now calls SaveToFile() after each counter increment
+  - Injects ILogger<ShiftProductionCounterSink> for error logging
+
+Load on Startup (TryRestoreFromFile):
+  1. Checks if production_counts.json exists
+  2. Reads and deserializes the JSON file
+  3. Compares saved (ShiftNumber + ShiftDate) with current shift
+  4. If both match → restores Total, Assured, Standard into ProductionCounterStore
+  5. If shift differs → file is stale; start at 0
+  6. Logs informational message about restore success or reason for skip
+  7. Graceful error handling: file errors logged as warnings, never crash the app
+
+Save After Each Result (SaveToFile):
+  1. Creates CountsDir if it doesn't exist (idempotent Directory.CreateDirectory)
+  2. Serializes current state (ShiftNumber, ShiftDate, Total, Assured, Standard) to JSON
+  3. Overwrites the same file with new values (single file per installation)
+  4. Writes are synchronous (called from dispatcher thread, file is ~130 bytes)
+  5. Write exceptions are caught and logged as warnings (non-blocking)
+
+Shift Boundary Behavior:
+When UpdateMetrics detects a shift change:
+  1. Resets counters to 0
+  2. Updates _lastShift to the new shift
+  3. UpdateMetrics increments from the fresh state
+  4. SaveToFile writes the first result of the new shift (typically Total=1, Assured/Standard depends on pass/fail)
+
+Restoration Scenarios:
+| Scenario | Result |
+|----------|--------|
+| App restart, same shift (same date + number) | Counters restored from file |
+| App restart, new shift (different date or number) | Counters reset to 0 for new shift |
+| File deleted manually | App logs info, starts at 0, creates new file on first cycle |
+| File corrupted or unreadable | App logs warning, starts at 0 gracefully |
+| File permissions denied | App logs warning, starts at 0; next cycle creates new file |
+
+Integration Points:
+  - No UI changes (uses existing ProductionCounterStore bindings)
+  - No DI changes (ShiftProductionCounterSink already a singleton)
+  - Config: No new config section needed (simple file-based persistence)
+  - Logging: Uses ILogger<ShiftProductionCounterSink> for all file operation messages
+
+Known Behavior:
+  - File is small (~130 bytes) and safe for frequent writes (every cycle)
+  - ShiftDate format: "yyyy-MM-dd" (ISO format, locale-independent)
+  - If app crashes mid-write, next startup will either use old values (if write incomplete) or new values (if write completed)
+  - Field teams can manually delete the counts file to reset; no special cleanup needed
+
+
+
+

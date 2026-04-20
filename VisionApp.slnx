@@ -1,0 +1,17 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="VisionApp.Core/VisionApp.Core.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="VisionApp.Inference.YoloX/VisionApp.Inference.YoloX.csproj" Id="19c5c19f-ecb8-45f6-8e77-9105bfc5a97e">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="VisionApp.Infrastructure/VisionApp.Infrastructure.csproj">
+    <Platform Project="x64" />
+  </Project>
+  <Project Path="VisionApp.Wpf/VisionApp.Wpf.csproj">
+    <Platform Project="x64" />
+  </Project>
+</Solution>

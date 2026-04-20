@@ -1,0 +1,109 @@
+﻿<Window x:Class="VisionApp.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:VisionApp.Wpf"
+        xmlns:vm="clr-namespace:VisionApp.Wpf.ViewModels"
+        xmlns:views="clr-namespace:VisionApp.Wpf.Views"
+        xmlns:uc="clr-namespace:VisionApp.Wpf.UserControls"
+        xmlns:modals="clr-namespace:VisionApp.Wpf.ViewModels.Modals"
+        mc:Ignorable="d"
+        Title="MainWindow"
+        Height="1024"
+        Width="1024"
+        Background="{DynamicResource PrimaryBackground}"
+        WindowState="Maximized"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="False"
+        WindowStartupLocation="CenterScreen"
+        >
+
+    <Window.Resources>
+
+        <!-- Main screen template -->
+        <DataTemplate DataType="{x:Type vm:MainViewModel}">
+            <views:HomeView />
+        </DataTemplate>
+
+        <!-- Tile template -->
+        <DataTemplate DataType="{x:Type vm:FrameTileViewModel}">
+            <views:FrameTileView />
+        </DataTemplate>
+
+        <!-- Camera group template -->
+        <DataTemplate DataType="{x:Type vm:CameraGroupViewModel}">
+            <views:CameraGroupView />
+        </DataTemplate>
+
+        <DataTemplate DataType="{x:Type modals:ConfirmationModalViewModel}">
+            <uc:ConfirmationModalView />
+        </DataTemplate>
+
+        <DataTemplate DataType="{x:Type modals:MessageModalViewModel}">
+            <uc:MessageModalView />
+        </DataTemplate>
+
+        <DataTemplate DataType="{x:Type vm:SettingsManagerViewModel}">
+            <views:SettingsManagerView />
+        </DataTemplate>
+
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource HeaderBackgroundBrush}">
+            <uc:HeaderRow />
+        </Border>
+
+        <!-- Main content -->
+        <!-- Main content + Right Nav -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <!-- Nav bar column -->
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Main view -->
+            <ContentControl Grid.Column="0"
+                    Content="{Binding CurrentViewModel}" />
+
+            <!-- Right navigation bar -->
+            <uc:NavigationBar Grid.Column="1"
+                      Margin="10,8,10,8"
+                      DataContext="{Binding NavigationBarViewModel}" />
+        </Grid>
+
+        <!-- Modal Overlay -->
+        <!-- Modal Overlay -->
+        <Border Grid.RowSpan="3"
+        Background="#80000000"
+        Visibility="{Binding IsModalOpen, Converter={StaticResource BoolToVisibilityConverter}}"
+        Panel.ZIndex="999"
+        HorizontalAlignment="Stretch"
+        VerticalAlignment="Stretch">
+
+            <ContentControl Content="{Binding ModalViewModel}"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"/>
+        </Border>
+
+
+
+        <!-- Footer -->
+  
+        <uc:StatusFooterView Grid.Row="2"
+                     DataContext="{Binding StatusFooterViewModel}" />
+
+
+    </Grid>
+</Window>

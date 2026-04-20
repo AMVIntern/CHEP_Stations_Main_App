@@ -1,0 +1,67 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <Platforms>x64</Platforms>
+	<ApplicationIcon>Resources\Logos\AMVIcon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="appsettings.json" />
+    <None Remove="Resources\Logos\AMVIcon.ico" />
+    <None Remove="Resources\Logos\AMVLogoWhiteBorder.png" /> 
+	  
+    <None Remove="Resources\Logos\ChepLogo.png" />
+    <None Remove="Resources\Logos\Splash.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Resource Include="Resources\Logos\AMVIcon.ico">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Resource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="MaterialDesignColors" Version="5.3.1" />
+    <PackageReference Include="MaterialDesignThemes" Version="5.3.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.6" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.6" />
+    <PackageReference Include="MVTec.HalconDotNet" Version="25050.0.0" />
+    <PackageReference Include="MVTec.HalconDotNet-Windows" Version="25050.0.0" />
+    <PackageReference Include="Serilog" Version="4.3.1" />
+    <PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Debug" Version="3.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\VisionApp.Core\VisionApp.Core.csproj" />
+    <ProjectReference Include="..\VisionApp.Infrastructure\VisionApp.Infrastructure.csproj" />
+  </ItemGroup>
+
+	<PropertyGroup>
+		<InterceptorsNamespaces>$(InterceptorsNamespaces);Microsoft.Extensions.Configuration.Binder.SourceGeneration</InterceptorsNamespaces>
+	</PropertyGroup>
+
+	<ItemGroup>
+    <Resource Include="Resources\Logos\AMVLogoWhiteBorder.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Resource>
+    <Resource Include="Resources\Logos\ChepLogo.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Resource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <SplashScreen Include="Resources\Logos\Splash.png" />
+  </ItemGroup>
+
+</Project>
