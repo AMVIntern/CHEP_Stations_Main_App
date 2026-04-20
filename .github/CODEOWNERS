@@ -1,2 +1,2 @@
 # Require approval for all release branches
-Release-*  @AMVIntern
+Release-*  @AMVIntern @Harsha-AMV @divya-amvco
