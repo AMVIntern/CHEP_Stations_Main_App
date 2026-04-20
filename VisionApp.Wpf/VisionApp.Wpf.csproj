@@ -13,8 +13,7 @@
   <ItemGroup>
     <None Remove="appsettings.json" />
     <None Remove="Resources\Logos\AMVIcon.ico" />
-    <None Remove="Resources\Logos\AMVLogoWhiteBorder.png" /> 
-	  
+    <None Remove="Resources\Logos\AMVLogoWhiteBorder.png" />
     <None Remove="Resources\Logos\ChepLogo.png" />
     <None Remove="Resources\Logos\Splash.png" />
   </ItemGroup>
