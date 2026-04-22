@@ -32,7 +32,7 @@ public sealed partial class SettingsManagerViewModel : ObservableObject
 		_logger = logger;
 
 		const string ExternalSettingsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings";
-        _configFilePath = Path.Combine(ExternalSettingsDir, "appsettings_s1.json");
+        _configFilePath = Path.Combine(ExternalSettingsDir, "appsettings_s2.json");
 
         // Populate collections from config at startup
         RefreshFromConfig();

@@ -29,7 +29,7 @@ namespace VisionApp.Wpf
 
             const string ExternalSettingsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings";
             const string LogsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\Logs";
-            const string SettingsFileName = "appsettings_s1.json";
+            const string SettingsFileName = "appsettings_s2.json";
             var externalSettingsPath = Path.Combine(ExternalSettingsDir, SettingsFileName);
 
             // Ensure logs directory exists
@@ -104,6 +104,8 @@ namespace VisionApp.Wpf
 
                     services.Configure<UiSecuritySettings>(
                         context.Configuration.GetSection(UiSecuritySettings.SectionName));
+                    services.Configure<UiStationDisplaySettings>(
+                        context.Configuration.GetSection(UiStationDisplaySettings.SectionName));
 
                     // Title provider
                     services.AddSingleton<IFrameTitleProvider, FrameTitleProvider>();
