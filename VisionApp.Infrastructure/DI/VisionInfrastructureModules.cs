@@ -53,49 +53,34 @@ internal static class VisionInfrastructureModules
 			return opts;
 		});
 
-		// Station 4 cameras
+		// Station 1 cameras
 		services.AddSingleton<ICamera>(sp =>
 		{
 			var opts = sp.GetRequiredService<FolderReplayOptions>();
 			var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-			return new FolderReplayCamera("S4Cam1", opts.Cam1Folder, opts, logger);
+			return new FolderReplayCamera("Cam1", opts.S1Cam1Folder, opts, logger);
 		});
 
 		services.AddSingleton<ICamera>(sp =>
 		{
 			var opts = sp.GetRequiredService<FolderReplayOptions>();
 			var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-			return new FolderReplayCamera("S4Cam2", opts.Cam2Folder, opts, logger);
-		});
-
-		// Station 5
-		services.AddSingleton<ICamera>(sp =>
-		{
-			var opts = sp.GetRequiredService<FolderReplayOptions>();
-			var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-			return new FolderReplayCamera("S5Cam1", opts.S5Cam1Folder, opts, logger);
+			return new FolderReplayCamera("Cam2", opts.S1Cam2Folder, opts, logger);
 		});
 
 		services.AddSingleton<ICamera>(sp =>
 		{
 			var opts = sp.GetRequiredService<FolderReplayOptions>();
 			var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-			return new FolderReplayCamera("S5Cam2", opts.S5Cam2Folder, opts, logger);
+			return new FolderReplayCamera("Cam3", opts.S1Cam3Folder, opts, logger);
 		});
 
 		services.AddSingleton<ICamera>(sp =>
 		{
 			var opts = sp.GetRequiredService<FolderReplayOptions>();
 			var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-			return new FolderReplayCamera("S5Cam3", opts.S5Cam3Folder, opts, logger);
+			return new FolderReplayCamera("Cam4", opts.S1Cam4Folder, opts, logger);
 		});
-
-		//services.AddSingleton<ICamera>(sp =>
-		//{
-		//	var opts = sp.GetRequiredService<FolderReplayOptions>();
-		//	var logger = sp.GetRequiredService<ILogger<FolderReplayCamera>>();
-		//	return new FolderReplayCamera("S5Cam4", opts.S5Cam4Folder, opts, logger);
-		//});
 
 		// Dummy triggers
 		services.AddSingleton<ITriggerSource, DummyTriggerSource>();

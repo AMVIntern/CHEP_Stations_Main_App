@@ -11,7 +11,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="appsettings.json" />
     <None Remove="Resources\Logos\AMVIcon.ico" />
     <None Remove="Resources\Logos\AMVLogoWhiteBorder.png" /> 
     <None Remove="Resources\Logos\ChepLogo.png" />
@@ -19,7 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="appsettings.json">
+    <Content Include="appsettings_s1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Resource Include="Resources\Logos\AMVIcon.ico">

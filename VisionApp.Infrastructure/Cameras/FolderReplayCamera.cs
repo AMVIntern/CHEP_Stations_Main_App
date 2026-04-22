@@ -39,7 +39,7 @@ public sealed class FolderReplayCamera : ICamera
         _logger = logger;
 
         if (string.IsNullOrWhiteSpace(_folderPath))
-            throw new InvalidOperationException($"{nameof(FolderReplayOptions)}.{(cameraId == "Cam1" ? nameof(FolderReplayOptions.Cam1Folder) : nameof(FolderReplayOptions.Cam2Folder))} is empty.");
+            throw new InvalidOperationException($"{nameof(FolderReplayOptions)} folder path is empty for camera '{cameraId}'.");
 
         if (!Directory.Exists(_folderPath))
             throw new DirectoryNotFoundException($"Replay folder not found for {cameraId}: '{_folderPath}'");

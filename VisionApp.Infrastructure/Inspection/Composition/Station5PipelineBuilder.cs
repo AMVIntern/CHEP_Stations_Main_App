@@ -13,12 +13,10 @@ namespace VisionApp.Infrastructure.Inspection.Composition;
 
 public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 {
-	public string StationKey => "Station5";
+	public string StationKey => _stationKey;
 	private readonly ICameraStationResolver _stations;
 	private readonly IOptionsMonitor<Station5DefectAssignmentOptions> _optionsMonitor;
-
-	// Station 5 labels (set these correctly for the Station5 model)
-	private static readonly string[] Labels = { "RN", "PN", "PL", "ST", "FN" };
+	private readonly string _stationKey;
 
 	private const float DefaultNms = 0.45f;
 
@@ -43,6 +41,7 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 		_traceLogger = traceLogger;
 
 		var opts = optionsMonitor.CurrentValue;
+		_stationKey = string.IsNullOrWhiteSpace(opts.StationKey) ? "Station5" : opts.StationKey.Trim();
 		_verticalBandRules = opts.VerticalBandRules
 			.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToRule());
 	}
@@ -73,115 +72,68 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 	private IInspectionRunner BuildTrigger1(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Example: Trigger 1 might need only YOLOX + decision
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Start"),
-
-			// Yolo object detection (RN, PN, PL etc)
-			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-			Trace($"S5[{key.Index}] After YOLOX"),
-
-			// Duplicate overlap filter
-			new VerticalBandFilterStep(
-				name: "VerticalBandFilter",
-				inputKey: "YoloX",
-				outputKey: "YoloX_Filtered",
-				rulesByIndex: _verticalBandRules,
-				defaultKeepAll: true),
-
-			Decide(fromOutput: "YoloX_Filtered"),
-		};
-
-		return Seq(steps);
+		return Seq(BuildSteps(key.Index, opts));
 	}
 
 	private IInspectionRunner BuildTrigger2(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Example: Trigger 2 might add extra steps later
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Start"),
-
-            // Later you might add something like:
-            // new HalconStapleCheckStep(...),
-            // new CropRoiStep(...),
-
-            YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-			Decide(fromOutput: "YoloX"),
-		};
-
-		return Seq(steps);
+		return Seq(BuildSteps(key.Index, opts));
 	}
 
 	private IInspectionRunner BuildTrigger3(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Example: Trigger 3 could be "same as trigger2"
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Start"),
-			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-			Decide(fromOutput: "YoloX"),
-		};
-
-		return Seq(steps);
+		return Seq(BuildSteps(key.Index, opts));
 	}
 
 	private IInspectionRunner BuildTrigger4(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Per-class thresholds now apply uniformly to all triggers (no trigger-specific overrides)
-
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Start"),
-
-			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-            // Maybe a second model later, or a HALCON measurement
-            // new SomeMeasurementStep(...),
-
-            Decide(fromOutput: "YoloX"),
-		};
-
-		return Seq(steps);
+		return Seq(BuildSteps(key.Index, opts));
 	}
 
 	private IInspectionRunner BuildTrigger5(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Per-class thresholds now apply uniformly to all triggers (no trigger-specific overrides)
-
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Start"),
-
-			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-            // Maybe a second model later, or a HALCON measurement
-            // new SomeMeasurementStep(...),
-
-            Decide(fromOutput: "YoloX"),
-		};
-
-		return Seq(steps);
+		return Seq(BuildSteps(key.Index, opts));
 	}
 
 	private IInspectionRunner BuildDefault(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		var steps = new IInspectionStep[]
-		{
-			Trace($"S5[{key.Index}] Default"),
-			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-			Decide(fromOutput: "YoloX"),
-		};
+		return Seq(BuildSteps(key.Index, opts));
+	}
 
-		return Seq(steps);
+	private IInspectionStep[] BuildSteps(int triggerIndex, Station5DefectAssignmentOptions opts)
+	{
+		var sec = opts.SecondaryModel;
+		if (sec is { Key.Length: > 0, ClassLabels.Length: > 0 })
+		{
+			return new IInspectionStep[]
+			{
+				Trace($"S5[{triggerIndex}] Start"),
+				new ParallelGroupStep("ModelInference", new IInspectionStep[]
+				{
+					YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
+					YoloX2("YoloX2", sec),
+				}),
+				new ParallelGroupStep("BandFilter", new IInspectionStep[]
+				{
+					VerticalBandFilter("VerticalBandFilter", "YoloX", "YoloX_Filtered"),
+					VerticalBandFilter("VerticalBandFilter2", "YoloX2", "YoloX2_Filtered"),
+				}),
+				Decide("YoloX_Filtered", "YoloX2_Filtered"),
+			};
+		}
+
+		return new IInspectionStep[]
+		{
+			Trace($"S5[{triggerIndex}] Start"),
+			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
+			VerticalBandFilter("VerticalBandFilter", "YoloX", "YoloX_Filtered"),
+			Decide("YoloX_Filtered"),
+		};
 	}
 
 	// --------------------------
@@ -208,8 +160,32 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 			classLabels: opts.ClassLabels);
 	}
 
+	private YoloXStep YoloX2(string stepName, Station5SecondaryModelOptions sec)
+	{
+		var opts = _optionsMonitor.CurrentValue;
+		return new YoloXStep(
+			name: stepName,
+			engine: _engine,
+			modelKey: sec.Key,
+			classThresholds: sec.ClassThresholds,
+			defaultThreshold: opts.DefaultThreshold,
+			nmsThreshold: DefaultNms,
+			classLabels: sec.ClassLabels);
+	}
+
+	private VerticalBandFilterStep VerticalBandFilter(string stepName, string inputKey, string outputKey)
+		=> new(
+			name: stepName,
+			inputKey: inputKey,
+			outputKey: outputKey,
+			rulesByIndex: _verticalBandRules,
+			defaultKeepAll: true);
+
 	private DecisionStep Decide(string fromOutput)
 		=> new DecisionStep(fromOutput);
+
+	private DecisionStep Decide(params string[] fromOutputs)
+		=> new DecisionStep(fromOutputs);
 }
 
 

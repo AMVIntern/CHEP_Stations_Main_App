@@ -9,44 +9,33 @@
         </Grid.RowDefinitions>
 
         <!-- Station Headers Row -->
-        <Grid Grid.Row="0" Background="{DynamicResource PanelBackgroundBrush}">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="{Binding StationHeaders[0].StarWidth}"/>
-                <ColumnDefinition Width="{Binding StationHeaders[1].StarWidth}"/>
-            </Grid.ColumnDefinitions>
-
-            <!-- Station 4 Header -->
-            <Border Grid.Column="0"
-                    Margin="8,4"
-                    Padding="10,4"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource AccentBorderBrush}"
-                    Background="{DynamicResource HeaderBackgroundBrush}"
-                    CornerRadius="4">
-                <TextBlock Text="{Binding StationHeaders[0].DisplayName}"
-                           Foreground="{DynamicResource PrimaryForeground}"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           TextAlignment="Center"
-                           VerticalAlignment="Center"/>
-            </Border>
-
-            <!-- Station 5 Header -->
-            <Border Grid.Column="1"
-                    Margin="8,4"
-                    Padding="10,4"
-                    BorderThickness="1"
-                    BorderBrush="{DynamicResource AccentBorderBrush}"
-                    Background="{DynamicResource HeaderBackgroundBrush}"
-                    CornerRadius="4">
-                <TextBlock Text="{Binding StationHeaders[1].DisplayName}"
-                           Foreground="{DynamicResource PrimaryForeground}"
-                           FontSize="12"
-                           FontWeight="SemiBold"
-                           TextAlignment="Center"
-                           VerticalAlignment="Center"/>
-            </Border>
-        </Grid>
+        <ItemsControl Grid.Row="0"
+                      ItemsSource="{Binding StationHeaders}"
+                      Background="{DynamicResource PanelBackgroundBrush}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <UniformGrid Rows="1"
+                                 Columns="{Binding StationHeaders.Count}" />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Margin="8,4"
+                            Padding="10,4"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource AccentBorderBrush}"
+                            Background="{DynamicResource HeaderBackgroundBrush}"
+                            CornerRadius="4">
+                        <TextBlock Text="{Binding DisplayName}"
+                                   Foreground="{DynamicResource PrimaryForeground}"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   TextAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
 
         <!-- Camera Groups Row -->
         <ItemsControl Grid.Row="1"

@@ -21,47 +21,33 @@ public sealed class DummyTriggerSource : ITriggerSource
     public async IAsyncEnumerable<TriggerEvent> ReadAllAsync(
         [EnumeratorCancellation] CancellationToken ct)
     {
-        // One full cycle: Cam1[1], Cam2[1], Cam1[2], Cam2[2], Cam1[3]
+        // One full Station1 cycle: Cam1..Cam4 at trigger indexes 1..5
         var keys = new[]
         {
-            // Station 4 Cameras
-            new TriggerKey("S4Cam1", 1),
-            new TriggerKey("S4Cam2", 1),
+            new TriggerKey("Cam1", 1),
+            new TriggerKey("Cam2", 1),
+            new TriggerKey("Cam3", 1),
+            new TriggerKey("Cam4", 1),
 
-            new TriggerKey("S4Cam1", 2),
-            new TriggerKey("S4Cam2", 2),
+            new TriggerKey("Cam1", 2),
+            new TriggerKey("Cam2", 2),
+            new TriggerKey("Cam3", 2),
+            new TriggerKey("Cam4", 2),
 
-            new TriggerKey("S4Cam1", 3),
-            new TriggerKey("S4Cam2", 3),
+            new TriggerKey("Cam1", 3),
+            new TriggerKey("Cam2", 3),
+            new TriggerKey("Cam3", 3),
+            new TriggerKey("Cam4", 3),
 
-            new TriggerKey("S4Cam1", 4),
-            new TriggerKey("S4Cam2", 4),
+            new TriggerKey("Cam1", 4),
+            new TriggerKey("Cam2", 4),
+            new TriggerKey("Cam3", 4),
+            new TriggerKey("Cam4", 4),
 
-            // Station 5 Cameras
-            new TriggerKey("S5Cam1", 1),
-            new TriggerKey("S5Cam2", 1),
-            new TriggerKey("S5Cam3", 1),
-            //new TriggerKey("S5Cam4", 1),
-
-            new TriggerKey("S5Cam1", 2),
-            new TriggerKey("S5Cam2", 2),
-            new TriggerKey("S5Cam3", 2),
-            //new TriggerKey("S5Cam4", 2),
-
-            new TriggerKey("S5Cam1", 3),
-            new TriggerKey("S5Cam2", 3),
-            new TriggerKey("S5Cam3", 3),
-            //new TriggerKey("S5Cam4", 3),
-
-            new TriggerKey("S5Cam1", 4),
-            new TriggerKey("S5Cam2", 4),
-            new TriggerKey("S5Cam3", 4),
-            //new TriggerKey("S5Cam4", 4),
-
-            new TriggerKey("S5Cam1", 5),
-            new TriggerKey("S5Cam2", 5),
-            new TriggerKey("S5Cam3", 5),
-            //new TriggerKey("S5Cam4", 5),
+            new TriggerKey("Cam1", 5),
+            new TriggerKey("Cam2", 5),
+            new TriggerKey("Cam3", 5),
+            new TriggerKey("Cam4", 5),
         };
 
         // Repeat cycles so you can see multiple completions while the app is running.

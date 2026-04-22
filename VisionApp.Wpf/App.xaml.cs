@@ -29,7 +29,7 @@ namespace VisionApp.Wpf
 
             const string ExternalSettingsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings";
             const string LogsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\Logs";
-            const string SettingsFileName = "appsettings.json";
+            const string SettingsFileName = "appsettings_s1.json";
             var externalSettingsPath = Path.Combine(ExternalSettingsDir, SettingsFileName);
 
             // Ensure logs directory exists
