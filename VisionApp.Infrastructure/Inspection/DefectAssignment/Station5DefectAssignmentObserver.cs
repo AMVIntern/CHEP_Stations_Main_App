@@ -150,7 +150,8 @@ public sealed class Station5DefectAssignmentObserver : IInspectionObserver
 				label = mapped;
 
 			if (string.Equals(label, "PN", StringComparison.OrdinalIgnoreCase) &&
-				triggerIndex >= 1 && triggerIndex <= cfg.PnToTn_MaxTriggerIndex)
+				cfg.PnToTn_MaxTriggerIndex is { Length: > 0 } &&
+				Array.IndexOf(cfg.PnToTn_MaxTriggerIndex, triggerIndex) >= 0)
 			{
 				label = "TN";
 			}

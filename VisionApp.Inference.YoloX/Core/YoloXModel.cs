@@ -4,6 +4,7 @@ using OpenCvSharp.Dnn;
 using System.Runtime.InteropServices;
 using VisionApp.Inference.YoloX.Models;
 using VisionApp.Inference.YoloX.Utils;
+using VisionApp.YOLOX.Core;
 
 namespace VisionApp.Inference.YoloX.Core;
 

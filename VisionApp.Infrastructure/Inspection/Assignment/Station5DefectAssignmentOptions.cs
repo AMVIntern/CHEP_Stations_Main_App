@@ -6,6 +6,7 @@ public sealed class Station5DefectAssignmentOptions
 {
 	public const string SectionName = "Station5DefectAssignment";
 
+	public string StationKey { get; init; } = "Station5";
 	public string InputOutputKey { get; init; } = "YoloX_Filtered";
 
 	/// <summary>
@@ -37,6 +38,8 @@ public sealed class Station5DefectAssignmentOptions
 	/// </summary>
 	public Dictionary<string, double> ClassThresholds { get; init; }
 		= new(StringComparer.OrdinalIgnoreCase);
+
+	public Station5SecondaryModelOptions? SecondaryModel { get; init; }
 }
 
 public sealed class Station5DefectAssignmentStationOptions
@@ -49,6 +52,16 @@ public sealed class Station5DefectAssignmentStationOptions
 	// "S5Cam1": ["TLB1", "TIB1"], can be 2/3/4 elements
 	public Dictionary<string, string[]> CameraElements { get; init; } = new();
 
-	// PN becomes TN for triggers 1..N (you said 1..4)
-	public int PnToTn_MaxTriggerIndex { get; init; } = 4;
+	// PN becomes TN for these trigger indexes.
+	public int[] PnToTn_MaxTriggerIndex { get; init; } = Array.Empty<int>();
+}
+
+public sealed class Station5SecondaryModelOptions
+{
+	public string Key { get; init; } = string.Empty;
+	public string[] ClassLabels { get; init; } = Array.Empty<string>();
+	public Dictionary<string, double> ClassThresholds { get; init; }
+		= new(StringComparer.OrdinalIgnoreCase);
+	public Dictionary<string, string> LabelToGroup { get; init; }
+		= new(StringComparer.OrdinalIgnoreCase);
 }

@@ -25,12 +25,6 @@ public static class InspectionBootstrapperV1
 		if (builders.Count == 0)
 			throw new InvalidOperationException("No IStationPipelineBuilder registered.");
 
-		foreach (var b in builders)
-		{
-			if (!modelKeys.Contains(b.StationKey))
-				throw new InvalidOperationException($"ModelKey '{b.StationKey}' not found in YoloXOptions.Models.");
-		}
-
 		var byKey = new Dictionary<TriggerKey, IInspectionRunner>();
 
 		foreach (var key in plan.OrderedTriggers.Distinct())
@@ -41,7 +35,12 @@ public static class InspectionBootstrapperV1
 			{
 				runner = builder.TryBuildFor(key);
 				if (runner != null)
+				{
+					if (!modelKeys.Contains(builder.StationKey))
+						throw new InvalidOperationException(
+							$"ModelKey '{builder.StationKey}' not found in YoloXOptions.Models.");
 					break;
+				}
 			}
 
 			if (runner != null)

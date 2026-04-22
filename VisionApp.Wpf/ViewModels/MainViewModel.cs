@@ -90,6 +90,7 @@ public sealed class CameraGroupViewModel
     public string Title => CameraId;
 
     public ObservableCollection<FrameTileViewModel> Tiles { get; }
+    public int TilesRows => Tiles.Count <= 0 ? 1 : Tiles.Count;
 
     public CameraGroupViewModel(string cameraId, IReadOnlyList<FrameTileViewModel> tiles)
     {
