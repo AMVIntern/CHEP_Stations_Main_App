@@ -18,8 +18,15 @@ public sealed class YoloXEngine : IYoloXEngine, IDisposable
         _logger = logger;
 		var dict = new Dictionary<string, YoloXModelPool>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var m in options.Value.Models)
-            dict[m.Key] = new YoloXModelPool(m.Path, m.PoolSize);
+        var o = options.Value;
+        foreach (var m in o.Models)
+        {
+            dict[m.Key] = new YoloXModelPool(
+                m.Path,
+                m.PoolSize,
+                confThreshold: o.DefaultConf,
+                nmsThreshold: o.DefaultNms);
+        }
 
         _pools = dict;
     }

@@ -42,5 +42,15 @@ namespace VisionApp.Wpf.Stores
         {
             ShowModal(new MessageModalViewModel(title, message, this));
         }
+
+        /// <summary>
+        /// Shows a password prompt. Returns true when the entered password matches <paramref name="expectedPassword"/>.
+        /// </summary>
+        public Task<bool> ShowPasswordPromptAsync(string title, string expectedPassword)
+        {
+            var vm = new PasswordPromptModalViewModel(title, expectedPassword, this);
+            ShowModal(vm);
+            return vm.ResultTask;
+        }
     }
 }

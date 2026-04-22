@@ -102,6 +102,9 @@ namespace VisionApp.Wpf
                     services.Configure<CameraStationsSettings>(
                         context.Configuration.GetSection(CameraStationsSettings.SectionName));
 
+                    services.Configure<UiSecuritySettings>(
+                        context.Configuration.GetSection(UiSecuritySettings.SectionName));
+
                     // Title provider
                     services.AddSingleton<IFrameTitleProvider, FrameTitleProvider>();
 
