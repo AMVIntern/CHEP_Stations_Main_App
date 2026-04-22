@@ -1,19 +1,43 @@
 ﻿using OpenCvSharp;
 using VisionApp.Inference.YoloX.Models;
 
-namespace VisionApp.Inference.YoloX.Core;
+namespace VisionApp.YOLOX.Core;
 
 public class YoloXPostProcessor
 {
     private readonly int _numClasses;
-    private readonly float _confThreshold;
+    private readonly float[] _confThresholds; // per-class confidence thresholds
     private readonly float _nmsThreshold;
+    private readonly bool _decodedOutput; // true if model was exported with --decode_in_inference
+    private readonly bool _bestClassOnly; // true = take max class per anchor (matches Python postprocess)
 
-    public YoloXPostProcessor(int numClasses, float conf = 0.5f, float nms = 0.5f)
+    // Strides never change — reuse the same list
+    private static readonly List<int> _strides = new List<int> { 8, 16, 32 };
+
+    // Grid strides depend only on input dimensions, which are fixed per model instance
+    private List<GridAndStride> _gridStrides;
+    private int _cachedGridWidth;
+    private int _cachedGridHeight;
+
+    /// <summary>Single confidence threshold applied to all classes.</summary>
+    public YoloXPostProcessor(int numClasses, float conf = 0.5f, float nms = 0.5f, bool decodedOutput = false, bool bestClassOnly = false)
     {
         _numClasses = numClasses;
-        _confThreshold = conf;
+        _confThresholds = new float[numClasses];
+        Array.Fill(_confThresholds, conf);
         _nmsThreshold = nms;
+        _decodedOutput = decodedOutput;
+        _bestClassOnly = bestClassOnly;
+    }
+
+    /// <summary>Per-class confidence thresholds. Array length must equal numClasses.</summary>
+    public YoloXPostProcessor(int numClasses, float[] perClassConf, float nms = 0.5f, bool decodedOutput = false, bool bestClassOnly = false)
+    {
+        _numClasses = numClasses;
+        _confThresholds = perClassConf;
+        _nmsThreshold = nms;
+        _decodedOutput = decodedOutput;
+        _bestClassOnly = bestClassOnly;
     }
 
     public List<PredictionObject> DecodeOutput(
@@ -26,16 +50,18 @@ public class YoloXPostProcessor
     {
         var predictionObjects = new List<PredictionObject>();
         var finalPredictions = new List<PredictionObject>();
-        var strides = new List<int> { 8, 16, 32 };
 
-        var gridStrides = GenerateGridsAndStrides(
-                                imageResizedWidth,
-                                imageResizedHeight,
-                                strides);
+        // Use cached grid strides — only recomputed if dimensions change (never in practice)
+        if (_gridStrides == null || _cachedGridWidth != imageResizedWidth || _cachedGridHeight != imageResizedHeight)
+        {
+            _gridStrides = GenerateGridsAndStrides(imageResizedWidth, imageResizedHeight, _strides);
+            _cachedGridWidth = imageResizedWidth;
+            _cachedGridHeight = imageResizedHeight;
+        }
+
         GenerateYoloXProposals(
-            gridStrides,
+            _gridStrides,
             tensorOutput,
-            _confThreshold,
             _numClasses,
             ref predictionObjects);
         SortPredictionObjectsByConfidence(ref predictionObjects);
@@ -45,7 +71,7 @@ public class YoloXPostProcessor
             ref pickedIndices,
             _nmsThreshold);
         // post suppressed final count
-        int finalPredictionCount = pickedIndices.Count();
+        int finalPredictionCount = pickedIndices.Count;
         finalPredictions.Capacity = finalPredictionCount;
 
         // Loop through the selected indices and save in predictionObjects
@@ -113,7 +139,6 @@ public class YoloXPostProcessor
     public void GenerateYoloXProposals(
         List<GridAndStride> gridStrides,
         float[] tensorOutput,
-        float minConfidence,
         int numClasses,
         ref List<PredictionObject> predictionObjects)
     {
@@ -126,16 +151,26 @@ public class YoloXPostProcessor
             if ((tensor_index + 5 + numClasses) > tensorOutput.Length)
                 continue;
 
-            int gridW = gridStrides[grid_index].GridW;
-            int gridH = gridStrides[grid_index].GridH;
-            int stride = gridStrides[grid_index].Stride;
+            float x_center, y_center, w, h;
 
-            // get bounding box dimensions
-            float x_center = (tensorOutput[tensor_index + 0] + gridW) * stride;
-            float y_center = (tensorOutput[tensor_index + 1] + gridH) * stride;
-            // width and height are generally stored in log format/ so inverse log them
-            float w = MathF.Exp(tensorOutput[tensor_index + 2]) * stride;
-            float h = MathF.Exp(tensorOutput[tensor_index + 3]) * stride;
+            if (_decodedOutput)
+            {
+                // Model exported with --decode_in_inference: output is already decoded coordinates
+                x_center = tensorOutput[tensor_index + 0];
+                y_center = tensorOutput[tensor_index + 1];
+                w = tensorOutput[tensor_index + 2];
+                h = tensorOutput[tensor_index + 3];
+            }
+            else
+            {
+                var gs = gridStrides[grid_index];
+                // Raw output: apply grid offset and stride decoding
+                x_center = (tensorOutput[tensor_index + 0] + gs.GridW) * gs.Stride;
+                y_center = (tensorOutput[tensor_index + 1] + gs.GridH) * gs.Stride;
+                w = MathF.Exp(tensorOutput[tensor_index + 2]) * gs.Stride;
+                h = MathF.Exp(tensorOutput[tensor_index + 3]) * gs.Stride;
+            }
+
             // get left top corner of bbox using x and y centers
             float x0 = x_center - (w * 0.5f);
             float y0 = y_center - (h * 0.5f);
@@ -143,24 +178,45 @@ public class YoloXPostProcessor
             // get bbox objectness
             float bbox_objectness = tensorOutput[tensor_index + 4];
 
-            // loop through class probablilties
-            for (int class_index = 0; class_index < numClasses; class_index++)
+            if (_bestClassOnly)
             {
-                // get class scores for current tensor index
-                float box_class_score = tensorOutput[tensor_index + 5 + class_index];
-                // get probabilities for each class -> objectness*classScore
-                float box_prob = bbox_objectness * box_class_score;
-
-                // if box prob > min conf save to prediction object
-                if (box_prob > minConfidence)
+                // Matches Python postprocess: take max class per anchor only, threshold is >=
+                int bestClass = 0;
+                float bestClassScore = tensorOutput[tensor_index + 5];
+                for (int class_index = 1; class_index < numClasses; class_index++)
                 {
-                    var prediction = new PredictionObject
+                    float score = tensorOutput[tensor_index + 5 + class_index];
+                    if (score > bestClassScore) { bestClassScore = score; bestClass = class_index; }
+                }
+                float box_prob = bbox_objectness * bestClassScore;
+                if (box_prob >= _confThresholds[bestClass])
+                {
+                    predictionObjects.Add(new PredictionObject
                     {
                         Rect = new Rect2f(x0, y0, w, h),
-                        Label = class_index,
+                        Label = bestClass,
                         Probability = box_prob
-                    };
-                    predictionObjects.Add(prediction);
+                    });
+                }
+            }
+            else
+            {
+                // loop through class probabilities, applying per-class confidence threshold
+                for (int class_index = 0; class_index < numClasses; class_index++)
+                {
+                    float box_class_score = tensorOutput[tensor_index + 5 + class_index];
+                    float box_prob = bbox_objectness * box_class_score;
+
+                    if (box_prob > _confThresholds[class_index])
+                    {
+                        var prediction = new PredictionObject
+                        {
+                            Rect = new Rect2f(x0, y0, w, h),
+                            Label = class_index,
+                            Probability = box_prob
+                        };
+                        predictionObjects.Add(prediction);
+                    }
                 }
             }
         }
@@ -180,8 +236,8 @@ public class YoloXPostProcessor
 
         int numPredictions = predictionObject.Count;
 
-        // create a list to store areas of bounding boxes
-        List<float> areas = new List<float>(new float[numPredictions]);
+        // Plain array — no double-allocation like List<float>(new float[n])
+        float[] areas = new float[numPredictions];
 
         // calculate areas
         for (int i = 0; i < numPredictions; i++)
@@ -195,13 +251,15 @@ public class YoloXPostProcessor
             var currentBox = predictionObject[i];
             bool keep = true;
 
-            // Compare with picked boxes
+            // Compare with picked boxes of the same class only (per-class NMS, matches Python batched_nms)
             foreach (var pickedIndex in pickedIndices)
             {
                 var pickedBox = predictionObject[pickedIndex];
+                if (pickedBox.Label != currentBox.Label)
+                    continue;
                 // Calculate intersection
                 var intersection = currentBox.Rect.Intersect(pickedBox.Rect);
-                float intersectionArea = intersection.Width * intersection.Height;
+                float intersectionArea = MathF.Max(0f, intersection.Width) * MathF.Max(0f, intersection.Height);
                 // Calculate union
                 float unionArea = areas[i] + areas[pickedIndex] - intersectionArea;
                 // Calculate IoU (Intersection over Union)
