@@ -104,6 +104,8 @@ namespace VisionApp.Wpf
 
                     services.Configure<UiSecuritySettings>(
                         context.Configuration.GetSection(UiSecuritySettings.SectionName));
+                    services.Configure<UiStationDisplaySettings>(
+                        context.Configuration.GetSection(UiStationDisplaySettings.SectionName));
 
                     // Title provider
                     services.AddSingleton<IFrameTitleProvider, FrameTitleProvider>();

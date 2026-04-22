@@ -41,7 +41,8 @@ public sealed partial class MainViewModel : ObservableObject
         CycleFramesStore store,
         ImageViewerService viewer,
         CameraConnectionStore cameraConnectionStore,
-        IOptions<UiFrameTitlesSettings> frameTitlesOptions)
+        IOptions<UiFrameTitlesSettings> frameTitlesOptions,
+        IOptions<UiStationDisplaySettings> stationDisplayOptions)
     {
         // Hook tile click -> open snapshot window
         foreach (var tile in store.Tiles)
@@ -75,10 +76,17 @@ public sealed partial class MainViewModel : ObservableObject
 
         CameraGroups = new ObservableCollection<CameraGroupViewModel>(groups);
 
-        // Build station headers from UI frame titles config
+        // Build station headers from UI frame titles config.
+        // For single-station layouts, allow UiStationDisplay.StationName to override header text.
+        var stationNameOverride = stationDisplayOptions.Value.StationName?.Trim();
+        var useStationNameOverride = !string.IsNullOrWhiteSpace(stationNameOverride)
+                                     && frameTitlesOptions.Value.Stations.Count == 1;
+
         StationHeaders = frameTitlesOptions.Value.Stations
             .Select(s => new StationHeaderInfo(
-                DisplayName: string.IsNullOrWhiteSpace(s.DisplayName) ? s.StationKey : s.DisplayName,
+                DisplayName: useStationNameOverride
+                    ? stationNameOverride!
+                    : (string.IsNullOrWhiteSpace(s.DisplayName) ? s.StationKey : s.DisplayName),
                 StarWidth: new GridLength(s.CameraElements.Count, GridUnitType.Star)))
             .ToList();
     }
