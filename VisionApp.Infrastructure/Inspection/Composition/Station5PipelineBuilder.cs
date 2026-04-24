@@ -205,7 +205,12 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 			classThresholds: classThresholds,
 			defaultThreshold: defaultThreshold,
 			nmsThreshold: DefaultNms,
-			classLabels: opts.ClassLabels);
+			classLabels: opts.ClassLabels,
+			thresholdProvider: () =>
+			{
+				var current = _optionsMonitor.CurrentValue;
+				return (current.ClassThresholds, current.DefaultThreshold);
+			});
 	}
 
 	private DecisionStep Decide(string fromOutput)

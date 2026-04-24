@@ -16,6 +16,7 @@ public sealed class YoloXStep : IInspectionStep
 	private readonly string _modelKey;
 	private readonly IReadOnlyDictionary<string, double> _classThresholds;
 	private readonly double _defaultThreshold;
+	private readonly Func<(IReadOnlyDictionary<string, double> ClassThresholds, double DefaultThreshold)>? _thresholdProvider;
 	private readonly float _nmsThreshold;
 	private readonly string[] _classLabels;
 
@@ -33,13 +34,15 @@ public sealed class YoloXStep : IInspectionStep
 		double defaultThreshold,
 		float nmsThreshold,
 		string[] classLabels,
-		string[]? ignoreLabels = null)
+		string[]? ignoreLabels = null,
+		Func<(IReadOnlyDictionary<string, double> ClassThresholds, double DefaultThreshold)>? thresholdProvider = null)
 	{
 		Name = name;
 		_engine = engine;
 		_modelKey = modelKey;
 		_classThresholds = classThresholds;
 		_defaultThreshold = defaultThreshold;
+		_thresholdProvider = thresholdProvider;
 		_nmsThreshold = nmsThreshold;
 		_classLabels = classLabels;
 		_ignoreLabels = ignoreLabels?.Length > 0
@@ -72,10 +75,13 @@ public sealed class YoloXStep : IInspectionStep
 			imageBgr: mat,
 			ct: ct).ConfigureAwait(false);
 
+		var (activeThresholds, activeDefaultThreshold) = _thresholdProvider?.Invoke()
+			?? (_classThresholds, _defaultThreshold);
+
 		var filtered = raw.Where(p =>
 		{
 			var label = _classLabels[p.Label];
-			var threshold = _classThresholds.TryGetValue(label, out var t) ? t : _defaultThreshold;
+			var threshold = activeThresholds.TryGetValue(label, out var t) ? t : activeDefaultThreshold;
 			return p.Probability >= threshold;
 		}).ToList();
 
