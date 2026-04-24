@@ -18,6 +18,8 @@ public sealed class YoloXStep : IInspectionStep
 	private readonly double _defaultThreshold;
 	private readonly float _nmsThreshold;
 	private readonly string[] _classLabels;
+	private readonly Func<string, double>? _thresholdResolver;
+	private readonly Func<double>? _defaultThresholdResolver;
 
 	/// <summary>
 	/// Labels that are stripped from the output entirely — no bounding box, no pass/fail
@@ -33,7 +35,9 @@ public sealed class YoloXStep : IInspectionStep
 		double defaultThreshold,
 		float nmsThreshold,
 		string[] classLabels,
-		string[]? ignoreLabels = null)
+		string[]? ignoreLabels = null,
+		Func<string, double>? thresholdResolver = null,
+		Func<double>? defaultThresholdResolver = null)
 	{
 		Name = name;
 		_engine = engine;
@@ -42,6 +46,8 @@ public sealed class YoloXStep : IInspectionStep
 		_defaultThreshold = defaultThreshold;
 		_nmsThreshold = nmsThreshold;
 		_classLabels = classLabels;
+		_thresholdResolver = thresholdResolver;
+		_defaultThresholdResolver = defaultThresholdResolver;
 		_ignoreLabels = ignoreLabels?.Length > 0
 			? new HashSet<string>(ignoreLabels, StringComparer.OrdinalIgnoreCase)
 			: new HashSet<string>();
@@ -75,7 +81,10 @@ public sealed class YoloXStep : IInspectionStep
 		var filtered = raw.Where(p =>
 		{
 			var label = _classLabels[p.Label];
-			var threshold = _classThresholds.TryGetValue(label, out var t) ? t : _defaultThreshold;
+			var threshold = _thresholdResolver?.Invoke(label)
+				?? (_classThresholds.TryGetValue(label, out var t)
+					? t
+					: (_defaultThresholdResolver?.Invoke() ?? _defaultThreshold));
 			return p.Probability >= threshold;
 		}).ToList();
 

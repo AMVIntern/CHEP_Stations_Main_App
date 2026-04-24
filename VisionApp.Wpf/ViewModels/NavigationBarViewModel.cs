@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using VisionApp.Infrastructure.Logging;
 using VisionApp.Wpf.Models;
 using VisionApp.Wpf.Services;
 using VisionApp.Wpf.Stores;
@@ -34,14 +35,16 @@ namespace VisionApp.Wpf.ViewModels
             NavigationStateService navState,
             ShellViewModel shell,
             ModalStore modalStore,
-            IOptionsMonitor<UiSecuritySettings> uiSecurityMonitor)
+            IOptionsMonitor<UiSecuritySettings> uiSecurityMonitor,
+            ImageLoggingOptions imageLoggingOptions)
         {
             _navState = navState ?? throw new ArgumentNullException(nameof(navState));
             _shell = shell ?? throw new ArgumentNullException(nameof(shell));
             _modalStore = modalStore ?? throw new ArgumentNullException(nameof(modalStore));
             _uiSecurityMonitor = uiSecurityMonitor ?? throw new ArgumentNullException(nameof(uiSecurityMonitor));
 
-            _logsRoot = Directory.Exists(@"C:\AMV\ImageLogs1") ? @"C:\AMV\ImageLogs1" : @"D:\";
+            var configuredRoot = imageLoggingOptions?.RootFolder;
+            _logsRoot = string.IsNullOrWhiteSpace(configuredRoot) ? @"D:\NewAppImageLogs" : configuredRoot;
 
             _navState.PropertyChanged += NavState_PropertyChanged;
 
@@ -121,9 +124,6 @@ namespace VisionApp.Wpf.ViewModels
             try
             {
                 Debug.WriteLine("EXIT CLICKED (command executed)");
-
-                if (!await TryUnlockProtectedActionAsync("Exit").ConfigureAwait(true))
-                    return;
 
                 bool confirm = await _modalStore.ShowConfirmationAsync(
                     "Exit Application",
