@@ -14,10 +14,10 @@ namespace VisionApp.Wpf.ViewModels;
 
 public sealed class SettingsViewModel : ObservableObject
 {
-    /// <summary>Live ProgramData config — must stay in sync with <c>App.xaml.cs</c> (<c>appsettings_s1.json</c>).</summary>
+    /// <summary>Live ProgramData config — must stay in sync with <c>App.xaml.cs</c> (<c>appsettings_s2.json</c>).</summary>
     private static readonly string AppSettingsPath = Path.Combine(
         @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings",
-        "appsettings_s1.json");
+        "appsettings_s2.json");
 
     /// <summary>
     /// Static mapping from raw config key to human-readable display name.
