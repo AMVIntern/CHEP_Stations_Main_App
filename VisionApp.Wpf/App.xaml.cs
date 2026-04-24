@@ -140,8 +140,10 @@ namespace VisionApp.Wpf
                     // Image viewer service
                     services.AddSingleton<ImageViewerService>();
 
+                    services.AddTransient<SettingsViewModel>();
+                    services.AddSingleton<Func<SettingsViewModel>>(sp => () => sp.GetRequiredService<SettingsViewModel>());
+
                     services.AddSingleton<MainViewModel>();
-                    services.AddSingleton<SettingsManagerViewModel>();
                     services.AddSingleton<ShellViewModel>();
 
                     services.AddSingleton<NavigationStateService>();

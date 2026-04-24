@@ -49,8 +49,8 @@
             <uc:PasswordPromptModalView />
         </DataTemplate>
 
-        <DataTemplate DataType="{x:Type vm:SettingsManagerViewModel}">
-            <views:SettingsManagerView />
+        <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
+            <views:SettingsView />
         </DataTemplate>
 
     </Window.Resources>

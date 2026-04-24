@@ -1,4 +1,5 @@
 ﻿using CommunityToolkit.Mvvm.ComponentModel;
+using System;
 using System.ComponentModel;
 using VisionApp.Wpf.Stores;
 
@@ -27,13 +28,13 @@ namespace VisionApp.Wpf.ViewModels
         }
 
         private readonly MainViewModel _homeViewModel;
-        private readonly SettingsManagerViewModel _settingsViewModel;
+        private readonly Func<SettingsViewModel> _settingsFactory;
 
-        public ShellViewModel(MainViewModel homeViewModel, SettingsManagerViewModel settingsViewModel, ModalStore modalStore)
+        public ShellViewModel(MainViewModel homeViewModel, ModalStore modalStore, Func<SettingsViewModel> settingsFactory)
         {
             _homeViewModel = homeViewModel;
-            _settingsViewModel = settingsViewModel;
             _currentViewModel = homeViewModel;
+            _settingsFactory = settingsFactory;
 
             _modalStore = modalStore;
             _modalStore.PropertyChanged += ModalStore_PropertyChanged;
@@ -56,7 +57,7 @@ namespace VisionApp.Wpf.ViewModels
 
         public void GoSettings()
         {
-            CurrentViewModel = _settingsViewModel;
+            CurrentViewModel = _settingsFactory();
         }
     }
 }

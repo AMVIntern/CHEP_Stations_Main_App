@@ -1,0 +1,280 @@
+<UserControl x:Class="VisionApp.Wpf.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:converters="clr-namespace:VisionApp.Wpf.Converters"
+             mc:Ignorable="d"
+             HorizontalAlignment="Stretch"
+             HorizontalContentAlignment="Stretch">
+
+    <UserControl.Resources>
+        <SolidColorBrush x:Key="SettingsPageBg" Color="#0B0F19"/>
+        <SolidColorBrush x:Key="SettingsAccent" Color="#00A39B"/>
+        <SolidColorBrush x:Key="SettingsOnAccentText" Color="#0B0F19"/>
+        <!-- Defect thresholds group: white frame on dark panel (mock) -->
+        <SolidColorBrush x:Key="SettingsThresholdPanelBg" Color="#0F111A"/>
+        <SolidColorBrush x:Key="SettingsGroupBorderWhite" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SettingsLabelWhite" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SettingsSliderTrack" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="SettingsValueBoxBg" Color="#0F111A"/>
+        <SolidColorBrush x:Key="SettingsValueBoxBorder" Color="#B8C8DC"/>
+
+        <converters:ThresholdTextConverter x:Key="ThresholdTextConverter"/>
+
+        <!-- Transparent repeat buttons for custom slider track -->
+        <Style x:Key="SettingsSliderRepeatButton" TargetType="RepeatButton">
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Rectangle Fill="Transparent"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ConfidenceSliderStyle" TargetType="Slider">
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Minimum" Value="0"/>
+            <Setter Property="Maximum" Value="1"/>
+            <Setter Property="Height" Value="22"/>
+            <Setter Property="Foreground" Value="{StaticResource SettingsSliderTrack}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid SnapsToDevicePixels="True">
+                            <Border Height="1.5"
+                                    VerticalAlignment="Center"
+                                    Margin="4,0"
+                                    Background="{StaticResource SettingsSliderTrack}"
+                                    CornerRadius="1"
+                                    Opacity="0.95"/>
+                            <Track x:Name="PART_Track" Focusable="False" IsDirectionReversed="False">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SettingsSliderRepeatButton}"
+                                                  Command="{x:Static Slider.DecreaseLarge}"/>
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SettingsSliderRepeatButton}"
+                                                  Command="{x:Static Slider.IncreaseLarge}"/>
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="9" Height="16" Focusable="False">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Background="White"
+                                                        CornerRadius="1"
+                                                        BorderThickness="0"/>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SettingsThresholdValueBox" TargetType="TextBox">
+            <Setter Property="Foreground" Value="{StaticResource SettingsLabelWhite}"/>
+            <Setter Property="Background" Value="{StaticResource SettingsValueBoxBg}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource SettingsValueBoxBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="CaretBrush" Value="{StaticResource SettingsLabelWhite}"/>
+            <Setter Property="SelectionBrush" Value="#40606060"/>
+            <Setter Property="Width" Value="76"/>
+            <Setter Property="Height" Value="34"/>
+        </Style>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled"
+                  Background="{StaticResource SettingsPageBg}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Stretch">
+
+        <StackPanel Margin="32,32,32,40"
+                    HorizontalAlignment="Stretch">
+
+            <TextBlock Text="Confidence Score Settings"
+                       Foreground="{DynamicResource PrimaryForeground}"
+                       FontSize="30"
+                       FontWeight="SemiBold"
+                       TextAlignment="Left"
+                       Margin="0,0,0,10"/>
+
+            <TextBlock Text="Adjust per-class confidence thresholds. Changes are saved to the configuration file."
+                       Foreground="{DynamicResource SecondaryForeground}"
+                       FontSize="15"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,28"/>
+
+            <!-- Group: Defect Class Thresholds (white frame, bold white labels) -->
+            <Grid Margin="0,0,0,28">
+                <Border Margin="0,11,0,0"
+                        BorderBrush="{StaticResource SettingsGroupBorderWhite}"
+                        BorderThickness="1"
+                        CornerRadius="2"
+                        Padding="24,28,24,22"
+                        Background="{StaticResource SettingsThresholdPanelBg}">
+                    <ItemsControl ItemsSource="{Binding AllThresholdRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,10,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding DisplayName}"
+                                               Foreground="{StaticResource SettingsLabelWhite}"
+                                               FontSize="16"
+                                               FontWeight="Bold"
+                                               VerticalAlignment="Center"/>
+
+                                    <Slider Grid.Column="1"
+                                            Style="{StaticResource ConfidenceSliderStyle}"
+                                            SmallChange="0.001"
+                                            LargeChange="0.05"
+                                            TickFrequency="0.05"
+                                            IsSnapToTickEnabled="False"
+                                            Value="{Binding Threshold, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                            VerticalAlignment="Center"
+                                            Margin="20,0,16,0"/>
+
+                                    <TextBox Grid.Column="2"
+                                             Style="{StaticResource SettingsThresholdValueBox}"
+                                             Text="{Binding Threshold, Converter={StaticResource ThresholdTextConverter}, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </Border>
+
+                <TextBlock Text="Defect Class Thresholds"
+                           Margin="18,0,0,0"
+                           Padding="6,0"
+                           VerticalAlignment="Top"
+                           HorizontalAlignment="Left"
+                           Background="{StaticResource SettingsThresholdPanelBg}"
+                           Foreground="{StaticResource SettingsLabelWhite}"
+                           FontSize="14"
+                           FontWeight="Bold"/>
+            </Grid>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+
+                <Button Command="{Binding SaveAsyncCommand}"
+                        MinWidth="168" Height="48"
+                        Margin="0,0,14,0"
+                        Cursor="Hand"
+                        FontSize="15"
+                        FontWeight="SemiBold"
+                        Foreground="{StaticResource SettingsOnAccentText}"
+                        Background="{StaticResource SettingsAccent}"
+                        BorderThickness="0">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="Bd"
+                                                Background="{TemplateBinding Background}"
+                                                CornerRadius="8"
+                                                Padding="20,10">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Opacity" Value="0.9"/>
+                                            </Trigger>
+                                            <Trigger Property="IsPressed" Value="True">
+                                                <Setter TargetName="Bd" Property="Opacity" Value="0.78"/>
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter TargetName="Bd" Property="Opacity" Value="0.45"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSaving}" Value="True">
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                    <TextBlock>
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="Save Changes"/>
+                                <Setter Property="FontSize" Value="15"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                <Setter Property="Foreground" Value="{StaticResource SettingsOnAccentText}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSaving}" Value="True">
+                                        <Setter Property="Text" Value="Saving…"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Button>
+
+                <Button Command="{Binding ResetCommand}"
+                        MinWidth="120" Height="48"
+                        Cursor="Hand"
+                        FontSize="15"
+                        FontWeight="SemiBold"
+                        Foreground="{DynamicResource PrimaryForeground}"
+                        Background="#121722"
+                        BorderBrush="{StaticResource SettingsAccent}"
+                        BorderThickness="1.5">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8"
+                                    Padding="20,10">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.92"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.75"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <TextBlock Text="Reset" Foreground="{DynamicResource PrimaryForeground}"/>
+                </Button>
+            </StackPanel>
+
+            <TextBlock Text="Note: Changes are saved to the configuration file and take effect on the next inspection cycle."
+                       Foreground="{DynamicResource SecondaryForeground}"
+                       FontSize="13"
+                       TextWrapping="Wrap"
+                       Opacity="0.95"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

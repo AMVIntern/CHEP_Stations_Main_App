@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using VisionApp.Wpf.ViewModels.Modals;
 
 namespace VisionApp.Wpf.UserControls;
@@ -29,5 +30,14 @@ public partial class PasswordPromptModalView : UserControl
 	{
 		if (DataContext is PasswordPromptModalViewModel vm)
 			vm.Password = ((PasswordBox)sender).Password;
+	}
+
+	private void PwdBox_OnKeyDown(object sender, KeyEventArgs e)
+	{
+		if (e.Key != Key.Enter)
+			return;
+		if (DataContext is PasswordPromptModalViewModel vm)
+			vm.SubmitCommand.Execute(null);
+		e.Handled = true;
 	}
 }
