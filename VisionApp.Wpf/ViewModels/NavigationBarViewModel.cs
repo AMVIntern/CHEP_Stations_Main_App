@@ -17,7 +17,7 @@ namespace VisionApp.Wpf.ViewModels
         private readonly NavigationStateService _navState;
         private readonly ShellViewModel _shell;
         private readonly ModalStore _modalStore;
-        private readonly IOptions<UiSecuritySettings> _uiSecurity;
+        private readonly IOptionsMonitor<UiSecuritySettings> _uiSecurityMonitor;
         private readonly string _logsRoot;
 
         public bool IsCollapsed
@@ -34,12 +34,12 @@ namespace VisionApp.Wpf.ViewModels
             NavigationStateService navState,
             ShellViewModel shell,
             ModalStore modalStore,
-            IOptions<UiSecuritySettings> uiSecurity)
+            IOptionsMonitor<UiSecuritySettings> uiSecurityMonitor)
         {
             _navState = navState ?? throw new ArgumentNullException(nameof(navState));
             _shell = shell ?? throw new ArgumentNullException(nameof(shell));
             _modalStore = modalStore ?? throw new ArgumentNullException(nameof(modalStore));
-            _uiSecurity = uiSecurity ?? throw new ArgumentNullException(nameof(uiSecurity));
+            _uiSecurityMonitor = uiSecurityMonitor ?? throw new ArgumentNullException(nameof(uiSecurityMonitor));
 
             _logsRoot = Directory.Exists(@"C:\AMV\ImageLogs1") ? @"C:\AMV\ImageLogs1" : @"D:\";
 
@@ -153,7 +153,7 @@ namespace VisionApp.Wpf.ViewModels
         /// </summary>
         private async Task<bool> TryUnlockProtectedActionAsync(string actionTitle)
         {
-            var pwd = _uiSecurity.Value.Password ?? string.Empty;
+            var pwd = _uiSecurityMonitor.CurrentValue.Password ?? string.Empty;
             if (string.IsNullOrWhiteSpace(pwd))
                 return true;
 
