@@ -67,7 +67,8 @@ namespace VisionApp.Wpf
                 .ConfigureAppConfiguration((context, config) =>
                 {
                     // Bundled appsettings.json (shipped with the app) — base/defaults.
-                    config.AddJsonFile(SettingsFileName, optional: false, reloadOnChange: false);
+                    // Optional on production machines; external ProgramData config is the required source.
+                    config.AddJsonFile(SettingsFileName, optional: true, reloadOnChange: false);
 
                     // External appsettings.json (ProgramData) — overrides bundled values.
                     // This is the live config file operators should edit.
