@@ -14,6 +14,8 @@ namespace VisionApp.Wpf.ViewModels;
 
 public sealed class SettingsViewModel : ObservableObject
 {
+    private const double ResetThresholdValue = 0.8;
+
     /// <summary>Live ProgramData config — must stay in sync with <c>App.xaml.cs</c> (<c>appsettings_s1.json</c>).</summary>
     private static readonly string AppSettingsPath = Path.Combine(
         @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings",
@@ -88,7 +90,7 @@ public sealed class SettingsViewModel : ObservableObject
         _logger = logger;
 
         SaveAsyncCommand = new AsyncRelayCommand(SaveAsyncExecuteAsync, () => !IsSaving);
-        ResetCommand = new RelayCommand(LoadFromOptions, () => !IsSaving);
+        ResetCommand = new RelayCommand(ResetToDefaultExecute, () => !IsSaving);
 
         LoadFromOptions();
     }
@@ -151,6 +153,18 @@ public sealed class SettingsViewModel : ObservableObject
             : char.ToUpper(w[0], CultureInfo.InvariantCulture) + w[1..].ToLower(CultureInfo.InvariantCulture)));
     }
 
+    private void ResetToDefaultExecute()
+    {
+        if (IsSaving)
+            return;
+
+        foreach (var item in PrimaryItems)
+            item.Threshold = ResetThresholdValue;
+
+        foreach (var item in SecondaryItems)
+            item.Threshold = ResetThresholdValue;
+    }
+
     private async Task SaveAsyncExecuteAsync()
     {
         if (IsSaving) return;
@@ -168,7 +182,7 @@ public sealed class SettingsViewModel : ObservableObject
             _logger.LogInformation("[Settings] Save complete.");
 
             _modalStore.ShowMessage("Settings Saved",
-                "Confidence thresholds have been updated.\nThey take effect on the next inspection cycle.");
+                "Confidence thresholds have been updated.\nThey now apply to ongoing and future inspections.");
         }
         catch (Exception ex)
         {
