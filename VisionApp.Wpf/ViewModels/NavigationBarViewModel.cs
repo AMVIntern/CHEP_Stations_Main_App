@@ -36,13 +36,13 @@ namespace VisionApp.Wpf.ViewModels
             ShellViewModel shell,
             ModalStore modalStore,
             IOptions<UiSecuritySettings> uiSecurity,
-            IOptions<ImageLoggingOptions> imageLoggingOptions)
+            ImageLoggingOptions imageLoggingOptions)
         {
             _navState = navState ?? throw new ArgumentNullException(nameof(navState));
             _shell = shell ?? throw new ArgumentNullException(nameof(shell));
             _modalStore = modalStore ?? throw new ArgumentNullException(nameof(modalStore));
             _uiSecurity = uiSecurity ?? throw new ArgumentNullException(nameof(uiSecurity));
-            var configuredLogsRoot = imageLoggingOptions?.Value?.RootFolder;
+            var configuredLogsRoot = imageLoggingOptions?.RootFolder;
 
             _logsRoot = string.IsNullOrWhiteSpace(configuredLogsRoot) ? @"D:\" : configuredLogsRoot;
 
