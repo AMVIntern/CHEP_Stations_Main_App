@@ -68,7 +68,7 @@ public sealed class Station5DefectAssignmentObserver : IInspectionObserver
 				_acc.MarkEndSeen(result.CycleId, stationKey, result.Key);
 		}
 
-		// 3) Aggregate only if we actually have boxes
+		// 3a) Primary model — aggregate if we have boxes
 		if (TryGetBoxes(result, _opts.InputOutputKey, out var boxes) && boxes.Count > 0)
 		{
 			var perFrameCounts = AssignCounts(
@@ -81,6 +81,22 @@ public sealed class Station5DefectAssignmentObserver : IInspectionObserver
 
 			if (perFrameCounts.Count > 0)
 				_acc.AddCounts(result.CycleId, stationKey, perFrameCounts);
+		}
+
+		// 3b) Secondary model — aggregate with secondary label mapping
+		if (_opts.SecondaryModel is { Key.Length: > 0 } sec &&
+			TryGetBoxes(result, "YoloX2_Filtered", out var boxes2) && boxes2.Count > 0)
+		{
+			var secondaryCounts = AssignCounts(
+				cfg: cfg,
+				labelToGroup: sec.LabelToGroup,
+				cameraId: cameraId,
+				triggerIndex: result.Key.Index,
+				imageWidth: result.ImageWidth,
+				boxes: boxes2);
+
+			if (secondaryCounts.Count > 0)
+				_acc.AddCounts(result.CycleId, stationKey, secondaryCounts);
 		}
 
 		// 4) Completion check (again: independent from boxes)
