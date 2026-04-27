@@ -102,7 +102,7 @@ public sealed class SequentialInspectionRunner : IInspectionRunner
 	{
 		var dict = new Dictionary<string, IReadOnlyList<OverlayBox>>(StringComparer.OrdinalIgnoreCase);
 
-		// Prefer filtered output if it exists
+		// Primary filtered output
 		if (ctx.Items.TryGetValue("YoloX_Filtered", out var filteredObj) && filteredObj is YoloXOutput fy)
 		{
 			var boxes = fy.Detections
@@ -114,8 +114,20 @@ public sealed class SequentialInspectionRunner : IInspectionRunner
 
 			if (boxes.Count > 0)
 				dict["YoloX_Filtered"] = boxes; // normalize key so UI doesn't have to change
+		}
 
-			return dict.Count == 0 ? null : new InspectionVisuals(dict);
+		// Secondary filtered output (if configured).
+		if (ctx.Items.TryGetValue("YoloX2_Filtered", out var filteredObj2) && filteredObj2 is YoloXOutput fy2)
+		{
+			var boxes = fy2.Detections
+				.Select(d => new OverlayBox(
+					Label: d.Label,
+					Confidence: d.Probability,
+					Rect: new RectD(d.Rect.X, d.Rect.Y, d.Rect.Width, d.Rect.Height)))
+				.ToList();
+
+			if (boxes.Count > 0)
+				dict["YoloX2_Filtered"] = boxes;
 		}
 
 		// Fallback: raw
@@ -130,11 +142,9 @@ public sealed class SequentialInspectionRunner : IInspectionRunner
 
 			if (boxes.Count > 0)
 				dict["YoloX"] = boxes;
-
-			return dict.Count == 0 ? null : new InspectionVisuals(dict);
 		}
 
-		return null;
+		return dict.Count == 0 ? null : new InspectionVisuals(dict);
 	}
 	private static IReadOnlyDictionary<string, double>? ExtractMetrics(InspectionContext ctx)
 	{

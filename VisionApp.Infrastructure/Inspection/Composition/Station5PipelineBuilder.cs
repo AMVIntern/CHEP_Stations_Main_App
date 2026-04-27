@@ -157,7 +157,13 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 			classThresholds: classThresholds,
 			defaultThreshold: defaultThreshold,
 			nmsThreshold: DefaultNms,
-			classLabels: opts.ClassLabels);
+			classLabels: opts.ClassLabels,
+			thresholdResolver: label =>
+			{
+				var current = _optionsMonitor.CurrentValue;
+				return current.ClassThresholds.TryGetValue(label, out var t) ? t : current.DefaultThreshold;
+			},
+			defaultThresholdResolver: () => _optionsMonitor.CurrentValue.DefaultThreshold);
 	}
 
 	private YoloXStep YoloX2(string stepName, Station5SecondaryModelOptions sec)
@@ -170,7 +176,15 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 			classThresholds: sec.ClassThresholds,
 			defaultThreshold: opts.DefaultThreshold,
 			nmsThreshold: DefaultNms,
-			classLabels: sec.ClassLabels);
+			classLabels: sec.ClassLabels,
+			thresholdResolver: label =>
+			{
+				var current = _optionsMonitor.CurrentValue.SecondaryModel;
+				if (current is not null && current.ClassThresholds.TryGetValue(label, out var t))
+					return t;
+				return _optionsMonitor.CurrentValue.DefaultThreshold;
+			},
+			defaultThresholdResolver: () => _optionsMonitor.CurrentValue.DefaultThreshold);
 	}
 
 	private VerticalBandFilterStep VerticalBandFilter(string stepName, string inputKey, string outputKey)
