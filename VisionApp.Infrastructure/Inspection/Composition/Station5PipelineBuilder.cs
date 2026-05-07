@@ -100,18 +100,13 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 	private IInspectionRunner BuildTrigger2(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Example: Trigger 2 might add extra steps later
 		var steps = new IInspectionStep[]
 		{
 			Trace($"S5[{key.Index}] Start"),
-
-            // Later you might add something like:
-            // new HalconStapleCheckStep(...),
-            // new CropRoiStep(...),
-
-            YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-			Decide(fromOutput: "YoloX"),
+			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
+			Trace($"S5[{key.Index}] After YOLOX"),
+			BandFilter(),
+			Decide(fromOutput: "YoloX_Filtered"),
 		};
 
 		return Seq(steps);
@@ -120,12 +115,13 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 	private IInspectionRunner BuildTrigger3(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Example: Trigger 3 could be "same as trigger2"
 		var steps = new IInspectionStep[]
 		{
 			Trace($"S5[{key.Index}] Start"),
 			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-			Decide(fromOutput: "YoloX"),
+			Trace($"S5[{key.Index}] After YOLOX"),
+			BandFilter(),
+			Decide(fromOutput: "YoloX_Filtered"),
 		};
 
 		return Seq(steps);
@@ -134,18 +130,13 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 	private IInspectionRunner BuildTrigger4(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Per-class thresholds now apply uniformly to all triggers (no trigger-specific overrides)
-
 		var steps = new IInspectionStep[]
 		{
 			Trace($"S5[{key.Index}] Start"),
-
 			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-            // Maybe a second model later, or a HALCON measurement
-            // new SomeMeasurementStep(...),
-
-            Decide(fromOutput: "YoloX"),
+			Trace($"S5[{key.Index}] After YOLOX"),
+			BandFilter(),
+			Decide(fromOutput: "YoloX_Filtered"),
 		};
 
 		return Seq(steps);
@@ -154,18 +145,13 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 	private IInspectionRunner BuildTrigger5(TriggerKey key)
 	{
 		var opts = _optionsMonitor.CurrentValue;
-		// Per-class thresholds now apply uniformly to all triggers (no trigger-specific overrides)
-
 		var steps = new IInspectionStep[]
 		{
 			Trace($"S5[{key.Index}] Start"),
-
 			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-
-            // Maybe a second model later, or a HALCON measurement
-            // new SomeMeasurementStep(...),
-
-            Decide(fromOutput: "YoloX"),
+			Trace($"S5[{key.Index}] After YOLOX"),
+			BandFilter(),
+			Decide(fromOutput: "YoloX_Filtered"),
 		};
 
 		return Seq(steps);
@@ -178,11 +164,20 @@ public sealed class Station5PipelineBuilder : IStationPipelineBuilder
 		{
 			Trace($"S5[{key.Index}] Default"),
 			YoloX1("YoloX", classThresholds: opts.ClassThresholds, defaultThreshold: opts.DefaultThreshold),
-			Decide(fromOutput: "YoloX"),
+			BandFilter(),
+			Decide(fromOutput: "YoloX_Filtered"),
 		};
 
 		return Seq(steps);
 	}
+
+	private VerticalBandFilterStep BandFilter()
+		=> new VerticalBandFilterStep(
+			name: "VerticalBandFilter",
+			inputKey: "YoloX",
+			outputKey: "YoloX_Filtered",
+			rulesByIndex: _verticalBandRules,
+			defaultKeepAll: true);
 
 	// --------------------------
 	// Tiny helpers (reads nicely)
