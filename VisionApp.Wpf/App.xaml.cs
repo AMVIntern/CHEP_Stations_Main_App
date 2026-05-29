@@ -29,7 +29,7 @@ namespace VisionApp.Wpf
 
             const string ExternalSettingsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\AppSettings";
             const string LogsDir = @"C:\ProgramData\AMV\VisionApp\0.0.1\Logs";
-            const string SettingsFileName = "appsettings.json";
+            const string SettingsFileName = "appsettings_s4_s5.json";
             var externalSettingsPath = Path.Combine(ExternalSettingsDir, SettingsFileName);
 
             // Ensure logs directory exists
@@ -67,7 +67,8 @@ namespace VisionApp.Wpf
                 .ConfigureAppConfiguration((context, config) =>
                 {
                     // Bundled appsettings.json (shipped with the app) — base/defaults.
-                    config.AddJsonFile(SettingsFileName, optional: false, reloadOnChange: false);
+                    // Optional on production machines; external ProgramData config is the required source.
+                    config.AddJsonFile(SettingsFileName, optional: true, reloadOnChange: false);
 
                     // External appsettings.json (ProgramData) — overrides bundled values.
                     // This is the live config file operators should edit.

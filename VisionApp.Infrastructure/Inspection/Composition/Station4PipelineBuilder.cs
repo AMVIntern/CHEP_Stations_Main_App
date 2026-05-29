@@ -87,7 +87,12 @@ public sealed class Station4PipelineBuilder : IStationPipelineBuilder
 			defaultThreshold: defaultThreshold,
 			nmsThreshold: DefaultNms,
 			classLabels: opts.ClassLabels,
-			ignoreLabels: opts.IgnoreLabels);
+			ignoreLabels: opts.IgnoreLabels,
+			thresholdProvider: () =>
+			{
+				var current = _optionsMonitor.CurrentValue;
+				return (current.ClassThresholds, current.DefaultThreshold);
+			});
 	}
 
 	private DecisionStep Decide(string fromOutput)

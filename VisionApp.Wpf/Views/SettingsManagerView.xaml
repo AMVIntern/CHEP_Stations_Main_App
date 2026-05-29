@@ -4,50 +4,85 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              mc:Ignorable="d"
-             d:DesignHeight="600" d:DesignWidth="800">
-     <Grid Background="{DynamicResource PrimaryBackground}">
-        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20">
-            <StackPanel Margin="0,0,0,20">
-                <!-- Title -->
-                <TextBlock Text="Confidence Score Settings"
-                           FontSize="24" FontWeight="Bold" Foreground="{DynamicResource PrimaryForeground}"/>
+             d:DesignHeight="600" d:DesignWidth="1200">
+    <UserControl.Resources>
+        <Style x:Key="ThresholdLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="28"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="ThresholdSliderStyle" TargetType="Slider">
+            <Setter Property="Minimum" Value="0"/>
+            <Setter Property="Maximum" Value="1"/>
+            <Setter Property="SmallChange" Value="0.01"/>
+            <Setter Property="LargeChange" Value="0.1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="ThresholdBoxStyle" TargetType="TextBox">
+            <Setter Property="Padding" Value="8"/>
+            <Setter Property="FontSize" Value="26"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="TextAlignment" Value="Right"/>
+            <Setter Property="Background" Value="{DynamicResource PanelBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource NeutralBorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Width" Value="120"/>
+        </Style>
+    </UserControl.Resources>
 
-                <!-- Status Message -->
+    <Grid Background="{DynamicResource PrimaryBackground}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
+            <StackPanel Margin="0,0,0,20">
+                <TextBlock Text="Confidence Score Settings"
+                           FontSize="44"
+                           FontWeight="Bold"
+                           Foreground="White"/>
+
+                <TextBlock Text="Adjust per-class confidence thresholds. Changes are saved to the configuration file."
+                           FontSize="18"
+                           Margin="0,8,0,0"
+                           Foreground="{DynamicResource SecondaryForeground}"/>
+
                 <TextBlock Text="{Binding StatusMessage}"
-                           Foreground="{DynamicResource AccentBorderBrush}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource AccentBorderBrush}"
+                           FontSize="16"
+                           Margin="0,8,0,0"
+                           TextWrapping="Wrap"
                            Visibility="{Binding StatusMessage, Converter={StaticResource StringToVisibilityConverter}}"/>
 
-                <!-- Station 4 Settings -->
-                <GroupBox Header="Side Station" Padding="15" BorderThickness="1" BorderBrush="{DynamicResource NeutralBorderBrush}" Background="{DynamicResource PanelBackgroundBrush}" Foreground="{DynamicResource PrimaryForeground}">
+                <GroupBox Header="Side Station"
+                          Margin="0,20,0,0"
+                          Padding="16"
+                          BorderThickness="1"
+                          BorderBrush="{DynamicResource NeutralBorderBrush}"
+                          Background="{DynamicResource PanelBackgroundBrush}"
+                          Foreground="White"
+                          HorizontalContentAlignment="Stretch">
                     <StackPanel>
                         <ItemsControl ItemsSource="{Binding Station4Classes}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,0,0,12">
+                                    <Grid Margin="0,0,0,16">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="200"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="100"/>
+                                            <ColumnDefinition Width="320"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="140"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <!-- Class Name -->
                                         <TextBlock Grid.Column="0"
                                                    Text="{Binding DisplayName}"
-                                                   FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource PrimaryForeground}"/>
+                                                   Style="{StaticResource ThresholdLabelStyle}"/>
 
-                                        <!-- Slider -->
                                         <Slider Grid.Column="1"
-                                                Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.1"
-                                                Value="{Binding Threshold, Mode=TwoWay}"
-                                                VerticalAlignment="Center" Margin="15,0,0,0"/>
+                                                Margin="24,0,24,0"
+                                                Style="{StaticResource ThresholdSliderStyle}"
+                                                Value="{Binding Threshold, Mode=TwoWay}"/>
 
-                                        <!-- Numeric Input -->
                                         <TextBox Grid.Column="2"
-                                                 Text="{Binding Threshold, StringFormat=0.000, Mode=TwoWay}"
-                                                 Padding="8" FontSize="12" TextAlignment="Right" Margin="15,0,0,0"
-                                                 Background="{DynamicResource PanelBackgroundBrush}" Foreground="{DynamicResource PrimaryForeground}"
-                                                 BorderBrush="{DynamicResource NeutralBorderBrush}"/>
+                                                 Style="{StaticResource ThresholdBoxStyle}"
+                                                 Text="{Binding Threshold, StringFormat=0.000, Mode=TwoWay}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -55,37 +90,37 @@
                     </StackPanel>
                 </GroupBox>
 
-                <!-- Station 5 Settings -->
-                <GroupBox Header="Bottom Station" Padding="15" BorderThickness="1" BorderBrush="{DynamicResource NeutralBorderBrush}" Background="{DynamicResource PanelBackgroundBrush}" Foreground="{DynamicResource PrimaryForeground}">
+                <GroupBox Header="Bottom Station"
+                          Margin="0,16,0,0"
+                          Padding="16"
+                          BorderThickness="1"
+                          BorderBrush="{DynamicResource NeutralBorderBrush}"
+                          Background="{DynamicResource PanelBackgroundBrush}"
+                          Foreground="White"
+                          HorizontalContentAlignment="Stretch">
                     <StackPanel>
                         <ItemsControl ItemsSource="{Binding Station5Classes}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid Margin="0,0,0,12">
+                                    <Grid Margin="0,0,0,16">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="200"/>
-                                            <ColumnDefinition Width="100"/>
-                                            <ColumnDefinition Width="100"/>
+                                            <ColumnDefinition Width="320"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="140"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <!-- Class Name -->
                                         <TextBlock Grid.Column="0"
                                                    Text="{Binding DisplayName}"
-                                                   FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource PrimaryForeground}"/>
+                                                   Style="{StaticResource ThresholdLabelStyle}"/>
 
-                                        <!-- Slider -->
                                         <Slider Grid.Column="1"
-                                                Minimum="0" Maximum="1" SmallChange="0.01" LargeChange="0.1"
-                                                Value="{Binding Threshold, Mode=TwoWay}"
-                                                VerticalAlignment="Center" Margin="15,0,0,0"/>
+                                                Margin="24,0,24,0"
+                                                Style="{StaticResource ThresholdSliderStyle}"
+                                                Value="{Binding Threshold, Mode=TwoWay}"/>
 
-                                        <!-- Numeric Input -->
                                         <TextBox Grid.Column="2"
-                                                 Text="{Binding Threshold, StringFormat=0.000, Mode=TwoWay}"
-                                                 Padding="8" FontSize="12" TextAlignment="Right" Margin="15,0,0,0"
-                                                 Background="{DynamicResource PanelBackgroundBrush}" Foreground="{DynamicResource PrimaryForeground}"
-                                                 BorderBrush="{DynamicResource NeutralBorderBrush}"/>
+                                                 Style="{StaticResource ThresholdBoxStyle}"
+                                                 Text="{Binding Threshold, StringFormat=0.000, Mode=TwoWay}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
@@ -93,24 +128,28 @@
                     </StackPanel>
                 </GroupBox>
 
-                <!-- Buttons -->
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,20,0,0">
                     <Button Command="{Binding SaveCommand}"
-                            Padding="15,10" FontSize="13" FontWeight="SemiBold"
-                            Background="{DynamicResource AccentBorderBrush}" Foreground="{DynamicResource PrimaryBackground}"
+                            Padding="32,12"
+                            FontSize="22"
+                            FontWeight="Bold"
+                            Background="{DynamicResource AccentBorderBrush}"
+                            Foreground="{DynamicResource PrimaryBackground}"
                             BorderThickness="0">
                         Save Changes
                     </Button>
                     <Button Command="{Binding ResetCommand}"
-                            Padding="15,10" FontSize="13" Margin="10,0,0,0"
-                            Background="{DynamicResource PanelBackgroundBrush}" Foreground="{DynamicResource PrimaryForeground}"
-                            BorderThickness="1" BorderBrush="{DynamicResource NeutralBorderBrush}">
+                            Padding="32,12"
+                            FontSize="22"
+                            FontWeight="Bold"
+                            Margin="16,0,0,0"
+                            Background="{DynamicResource PanelBackgroundBrush}"
+                            Foreground="White"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource AccentBorderBrush}">
                         Reset
                     </Button>
                 </StackPanel>
-
-                <TextBlock Text="Note: Changes are saved to the configuration file and will take effect on the next inspection cycle."
-                           FontSize="11" Foreground="{DynamicResource SecondaryForeground}" TextWrapping="Wrap" Margin="0,20,0,0"/>
             </StackPanel>
         </ScrollViewer>
     </Grid>
