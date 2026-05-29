@@ -9,7 +9,7 @@ public static class VisionInfrastructureServiceCollectionExtensions
 		this IServiceCollection services,
 		IConfiguration configuration)
 	{
-		const bool OFFLINE_MODE = true;
+		const bool OFFLINE_MODE = false;
 
 		services.AddImageLoggingModule(configuration);
 
