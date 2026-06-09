@@ -9,8 +9,8 @@
 
   <ItemGroup>
     <PackageReference Include="libplctag" Version="1.5.2" />
-    <PackageReference Include="MVTec.HalconDotNet" Version="25050.0.0" />
-    <PackageReference Include="MVTec.HalconDotNet-Windows" Version="25050.0.0" />
+    <PackageReference Include="MVTec.HalconDotNet" Version="25110.0.0" />
+    <PackageReference Include="MVTec.HalconDotNet-Windows" Version="25110.0.0" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260330" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
   </ItemGroup>
