@@ -64,8 +64,8 @@ public static class CapturePlanFactory
             StartTriggers = new HashSet<TriggerKey>
             {
                 // Statoion 4
-                //new("S4Cam1", 1),
-                new("S4Cam2", 1),
+                new("S4Cam1", 1),
+                //new("S4Cam2", 1),
 
                 // Station 5
                 //new("S5Cam1", 1),
